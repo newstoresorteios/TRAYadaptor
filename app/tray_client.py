@@ -11,26 +11,29 @@ class TrayClient:
         self.auth = auth
         self.http_client = http_client
 
-    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
+    async def request(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        data: Any = None, json: Any = None, headers: dict[str, str] | None = None,
+    ) -> Any:
         token = await self.auth.get_valid_token()
         for attempt in range(2):
-            params = dict(kwargs.pop("params", {}) or {})
-            params["access_token"] = token.access_token
+            request_params = dict(params or {})
+            request_params["access_token"] = token.access_token
             try:
                 if self.http_client:
-                    response = await self.http_client.request(method, self._url(path), params=params, timeout=15.0, **kwargs)
+                    response = await self.http_client.request(method, self._url(path), params=request_params, data=data, json=json, headers=headers, timeout=15.0)
                 else:
                     async with httpx.AsyncClient(timeout=15.0) as client:
-                        response = await client.request(method, self._url(path), params=params, **kwargs)
+                        response = await client.request(method, self._url(path), params=request_params, data=data, json=json, headers=headers)
             except httpx.TimeoutException as exc:
                 raise TrayConnectionError("Tray request timed out") from exc
             except httpx.RequestError as exc:
                 raise TrayConnectionError("Could not connect to Tray") from exc
-            if response.status_code in (401, 403) and attempt == 0:
+            if response.status_code == 401 and attempt == 0:
                 token = await self.auth.refresh()
                 continue
             if response.is_error:
-                raise TrayAPIError("Tray API request failed")
+                raise TrayAPIError("Tray API request failed", response.status_code)
             try:
                 return response.json()
             except ValueError as exc:

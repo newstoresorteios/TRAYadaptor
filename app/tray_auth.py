@@ -43,12 +43,29 @@ class TrayAuth:
     async def refresh(self) -> TokenState:
         if not self.state or not self.state.refresh_token:
             raise TrayAuthenticationError("No refresh token available")
-        payload = {
+        params = {
             "consumer_key": self.settings.tray_consumer_key,
             "consumer_secret": self.settings.tray_consumer_secret,
             "refresh_token": self.state.refresh_token,
         }
-        response = await self._post_auth(payload)
+        try:
+            if self.http_client:
+                response = await self.http_client.get(f"{self.settings.tray_api_base}/auth", params=params, timeout=15.0)
+            else:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.get(f"{self.settings.tray_api_base}/auth", params=params)
+        except httpx.TimeoutException as exc:
+            raise TrayConnectionError("Tray token refresh timed out") from exc
+        except httpx.RequestError as exc:
+            raise TrayConnectionError("Could not connect to Tray") from exc
+        if response.is_error:
+            raise TrayAuthenticationError("Tray token refresh failed")
+        try:
+            response = response.json()
+        except ValueError as exc:
+            raise TrayAuthenticationError("Tray returned a non-JSON refresh response") from exc
+        if not isinstance(response, dict):
+            raise TrayAuthenticationError("Tray returned an invalid refresh response")
         self.state = self._parse_token_response(response)
         return self.state
 
