@@ -12,6 +12,7 @@ class Settings:
     tray_consumer_secret: str
     tray_coupon_valid_days: int = 180
     tray_store_code: str = ""
+    tray_adapter_token: str = ""
 
 
 def get_settings() -> Settings:
@@ -21,6 +22,7 @@ def get_settings() -> Settings:
         "TRAY_CONSUMER_KEY",
         "TRAY_CONSUMER_SECRET",
         "TRAY_STORE_CODE",
+        "TRAY_ADAPTER_TOKEN",
     )
     values = {name: os.getenv(name) for name in names}
     missing = [name for name, value in values.items() if not value]
@@ -39,4 +41,5 @@ def get_settings() -> Settings:
         tray_consumer_secret=values["TRAY_CONSUMER_SECRET"],
         tray_coupon_valid_days=coupon_days,
         tray_store_code=values["TRAY_STORE_CODE"],
+        tray_adapter_token=values["TRAY_ADAPTER_TOKEN"],
     )

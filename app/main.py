@@ -1,6 +1,8 @@
 from typing import Any
 
-from fastapi import FastAPI, Query, Request
+import hmac
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from .config import get_settings
@@ -32,6 +34,14 @@ def _client() -> TrayClient:
 def _resources():
     client = _client()
     return client, ProductResource(client), BrandResource(client), KitResource(client), InventoryResource(client), CustomerResource(client), CouponResource(client), UserResource(client)
+
+
+def require_internal_token(request: Request) -> None:
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, supplied = authorization.partition(" ")
+    expected = get_settings().tray_adapter_token
+    if scheme.lower() != "bearer" or not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Bearer"})
 
 
 @app.exception_handler(TrayConfigurationError)
@@ -85,78 +95,78 @@ def normalize_products(payload: Any) -> list[dict[str, Any]]:
     return [normalize_product(value) for value in values]
 
 
-@app.get("/internal/products")
+@app.get("/internal/products", dependencies=[Depends(require_internal_token)])
 async def internal_products(request: Request):
     _, resource, *_ = _resources()
     return await resource.list(_params(request, PRODUCT_FILTERS))
 
 
-@app.get("/internal/products/{product_id}")
+@app.get("/internal/products/{product_id}", dependencies=[Depends(require_internal_token)])
 async def internal_product(product_id: str):
     return await _resources()[1].get(product_id)
 
 
-@app.get("/internal/products/{product_id}/stock")
+@app.get("/internal/products/{product_id}/stock", dependencies=[Depends(require_internal_token)])
 async def internal_product_stock(product_id: str):
     return await _resources()[1].get_product_stock(product_id)
 
 
-@app.get("/internal/brands")
+@app.get("/internal/brands", dependencies=[Depends(require_internal_token)])
 async def internal_brands(request: Request):
     return await _resources()[2].list(_params(request, {"attrs", "sort", "limit", "page"}))
 
 
-@app.get("/internal/brands/{brand_id}")
+@app.get("/internal/brands/{brand_id}", dependencies=[Depends(require_internal_token)])
 async def internal_brand(brand_id: str):
     return await _resources()[2].get(brand_id)
 
 
-@app.get("/internal/kits")
+@app.get("/internal/kits", dependencies=[Depends(require_internal_token)])
 async def internal_kits(request: Request):
     return await _resources()[3].list(_params(request, {"limit", "page", "sort", "attrs"}))
 
 
-@app.get("/internal/inventory/distribution-centers")
+@app.get("/internal/inventory/distribution-centers", dependencies=[Depends(require_internal_token)])
 async def internal_distribution_centers(request: Request):
     return await _resources()[4].distribution_centers(_params(request, {"limit", "page", "sort", "attrs"}))
 
 
-@app.get("/internal/inventory/distribution-centers/{center_id}")
+@app.get("/internal/inventory/distribution-centers/{center_id}", dependencies=[Depends(require_internal_token)])
 async def internal_distribution_center(center_id: str):
     return await _resources()[4].distribution_center(center_id)
 
 
-@app.get("/internal/inventory/products/{product_id}/distribution-centers")
+@app.get("/internal/inventory/products/{product_id}/distribution-centers", dependencies=[Depends(require_internal_token)])
 async def internal_product_distribution_centers(product_id: str):
     return await _resources()[4].detailed_product_stock(product_id)
 
 
-@app.get("/internal/customers")
+@app.get("/internal/customers", dependencies=[Depends(require_internal_token)])
 async def internal_customers(request: Request):
     return await _resources()[5].list(_params(request, CUSTOMER_FILTERS))
 
 
-@app.get("/internal/customers/{customer_id}")
+@app.get("/internal/customers/{customer_id}", dependencies=[Depends(require_internal_token)])
 async def internal_customer(customer_id: str):
     return await _resources()[5].get(customer_id)
 
 
-@app.get("/internal/customer-addresses")
+@app.get("/internal/customer-addresses", dependencies=[Depends(require_internal_token)])
 async def internal_customer_addresses(request: Request):
     return await _resources()[5].addresses(_params(request, {"customer_id", "attrs", "limit", "page", "sort"}))
 
 
-@app.get("/internal/customer-addresses/{address_id}")
+@app.get("/internal/customer-addresses/{address_id}", dependencies=[Depends(require_internal_token)])
 async def internal_customer_address(address_id: str):
     return await _resources()[5].address(address_id)
 
 
-@app.get("/internal/coupons")
+@app.get("/internal/coupons", dependencies=[Depends(require_internal_token)])
 async def internal_coupons(request: Request):
     return await _resources()[6].list(_params(request, {"limit", "page", "sort", "attrs", "code"}))
 
 
-@app.get("/internal/coupons/{coupon_id}")
+@app.get("/internal/coupons/{coupon_id}", dependencies=[Depends(require_internal_token)])
 async def internal_coupon(coupon_id: str):
     return await _resources()[6].get(coupon_id)
 
@@ -165,21 +175,21 @@ async def _coupon_relationship(kind: str, coupon_id: str):
     return await _resources()[6].relationship(kind, coupon_id)
 
 
-@app.get("/internal/coupons/{coupon_id}/customers")
+@app.get("/internal/coupons/{coupon_id}/customers", dependencies=[Depends(require_internal_token)])
 async def coupon_customers(coupon_id: str): return await _coupon_relationship("customer", coupon_id)
-@app.get("/internal/coupons/{coupon_id}/products")
+@app.get("/internal/coupons/{coupon_id}/products", dependencies=[Depends(require_internal_token)])
 async def coupon_products(coupon_id: str): return await _coupon_relationship("product", coupon_id)
-@app.get("/internal/coupons/{coupon_id}/categories")
+@app.get("/internal/coupons/{coupon_id}/categories", dependencies=[Depends(require_internal_token)])
 async def coupon_categories(coupon_id: str): return await _coupon_relationship("category", coupon_id)
-@app.get("/internal/coupons/{coupon_id}/brands")
+@app.get("/internal/coupons/{coupon_id}/brands", dependencies=[Depends(require_internal_token)])
 async def coupon_brands(coupon_id: str): return await _coupon_relationship("brand", coupon_id)
-@app.get("/internal/coupons/{coupon_id}/shipping")
+@app.get("/internal/coupons/{coupon_id}/shipping", dependencies=[Depends(require_internal_token)])
 async def coupon_shipping(coupon_id: str): return await _coupon_relationship("shipping", coupon_id)
-@app.get("/internal/coupons/{coupon_id}/gifts")
+@app.get("/internal/coupons/{coupon_id}/gifts", dependencies=[Depends(require_internal_token)])
 async def coupon_gifts(coupon_id: str): return await _coupon_relationship("gift", coupon_id)
 
 
-@app.get("/internal/users")
+@app.get("/internal/users", dependencies=[Depends(require_internal_token)])
 async def internal_users(request: Request):
     return await _resources()[7].list(_params(request, {"limit", "page", "sort", "attrs"}))
 

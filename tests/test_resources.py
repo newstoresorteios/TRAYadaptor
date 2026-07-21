@@ -59,7 +59,7 @@ async def test_brand_kit_customer_and_user_resources():
         if request.url.path.endswith("/auth"): return reply(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
         if "/brands" in request.url.path: return reply(request, {"Brands": [{"Brand": {"id": "b", "brand": "Casio"}}]})
         if "/kits" in request.url.path: return reply(request, {"Kits": [{"Kit": {"id": "k", "ProductVariantKit": [{"variant_id": "v", "price": "2"}]}}]})
-        if "/addresses" in request.url.path: return reply(request, {"Addresses": [{"Address": {"id": "a", "customer_id": "c"}}]})
+        if "/addresses" in request.url.path: return reply(request, {"paging": {"total": 2, "page": 1, "offset": 0, "limit": 2, "maxLimit": 50}, "CustomerAddresses": [{"CustomerAddress": {"id": "a", "customer_id": "c"}}]})
         if "/customers" in request.url.path: return reply(request, {"Customers": [{"Customer": {"id": "c", "token": "secret"}}]})
         return reply(request, {"Users": [{"User": {"id": "u", "cpf": "hidden", "permissions": {"Products": True}}}]})
     c = client(handler)
@@ -69,6 +69,22 @@ async def test_brand_kit_customer_and_user_resources():
     assert (await CustomerResource(c).addresses())["addresses"][0]["customer_id"] == "c"
     assert "cpf" not in (await UserResource(c).list())["users"][0]
     await BrandResource(c).create({}); await BrandResource(c).update("b", {}); await BrandResource(c).delete("b")
+
+
+@pytest.mark.asyncio
+async def test_customer_addresses_real_envelope_and_detail():
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return reply(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        if request.url.path.endswith("/addresses"):
+            return reply(request, {"paging": {"total": 2, "page": 1, "offset": 0, "limit": 2, "maxLimit": 50}, "CustomerAddresses": [{"CustomerAddress": {"id": "123", "customer_id": "10", "address": "Rua Teste", "number": "100"}}]})
+        return reply(request, {"CustomerAddress": {"id": "123", "customer_id": "10", "address": "Rua Teste", "number": "100"}})
+    resource = CustomerResource(client(handler))
+    result = await resource.addresses({"limit": 2})
+    assert len(result["addresses"]) == 1
+    assert result["paging"]["total"] == 2
+    detail = await resource.address("123")
+    assert detail["address"]["id"] == "123" and detail["address"]["number"] == "100"
 
 
 @pytest.mark.asyncio

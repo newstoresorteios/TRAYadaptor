@@ -13,6 +13,7 @@ TRAY_CONSUMER_KEY=
 TRAY_CONSUMER_SECRET=
 TRAY_COUPON_VALID_DAYS=180
 TRAY_STORE_CODE=
+TRAY_ADAPTER_TOKEN=
 ```
 
 `TRAY_API_BASE` já é o endereço completo da API (incluindo `/web_api`); o cliente não acrescenta esse segmento novamente. Tokens ficam em memória, são reutilizados enquanto válidos e recebem uma tentativa única de refresh após HTTP 401.
@@ -77,3 +78,5 @@ Cupons calculam `ends_at` usando `TRAY_COUPON_VALID_DAYS` somente quando o calle
 ## Render
 
 O `render.yaml` contém apenas o Web Service, build e start command. As variáveis devem ser cadastradas no ambiente do Render sem valores versionados.
+
+As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/health` e as rotas `/tray/*` permanecem públicas.
