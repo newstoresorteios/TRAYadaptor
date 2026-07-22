@@ -8,12 +8,14 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .exceptions import TrayAPIError, TrayAuthenticationError, TrayConfigurationError, TrayConnectionError, TrayError, TrayValidationError
 from .resources.brands import BrandResource
+from .resources.categories import CategoryResource
 from .resources.coupons import CouponResource
 from .resources.customers import CustomerResource
 from .resources.inventory import InventoryResource
 from .resources.kits import KitResource
 from .resources.products import ProductResource
 from .resources.users import UserResource
+from .resources.variants import VariantResource
 from .normalizers.common import items
 from .normalizers.product import normalize_product
 from .tray_auth import TrayAuth
@@ -34,6 +36,14 @@ def _client() -> TrayClient:
 def _resources():
     client = _client()
     return client, ProductResource(client), BrandResource(client), KitResource(client), InventoryResource(client), CustomerResource(client), CouponResource(client), UserResource(client)
+
+
+def _category_resource() -> CategoryResource:
+    return CategoryResource(_client())
+
+
+def _variant_resource() -> VariantResource:
+    return VariantResource(_client())
 
 
 def require_internal_token(request: Request) -> None:
@@ -110,6 +120,29 @@ def _product_params(request: Request) -> dict[str, Any]:
     if not 1 <= limit <= 50:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
     values["limit"] = limit
+    for key in ("available", "available_in_store"):
+        if key in values:
+            lowered = values[key].lower()
+            if lowered == "true":
+                values[key] = "1"
+            elif lowered == "false":
+                values[key] = "0"
+    return values
+
+
+def _catalog_params(request: Request, allowed: set[str]) -> dict[str, Any]:
+    values = {
+        key: value
+        for key, value in request.query_params.items()
+        if key in allowed and value != ""
+    }
+    try:
+        limit = int(values.get("limit", 20))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="limit must be an integer") from exc
+    if not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
+    values["limit"] = limit
     return values
 
 
@@ -124,6 +157,17 @@ async def internal_products(request: Request):
     return await resource.list(_product_params(request))
 
 
+@app.get("/internal/products/variants", dependencies=[Depends(require_internal_token)])
+async def internal_variants(request: Request):
+    allowed = {"id", "product_id", "ean", "price", "promotional_price", "stock", "minimum_stock", "modified", "sort", "limit", "page"}
+    return await _variant_resource().list(_catalog_params(request, allowed))
+
+
+@app.get("/internal/products/variants/{variant_id}", dependencies=[Depends(require_internal_token)])
+async def internal_variant(variant_id: str):
+    return await _variant_resource().get(variant_id)
+
+
 @app.get("/internal/products/{product_id}", dependencies=[Depends(require_internal_token)])
 async def internal_product(product_id: str):
     return await _resources()[1].get(product_id)
@@ -132,6 +176,21 @@ async def internal_product(product_id: str):
 @app.get("/internal/products/{product_id}/stock", dependencies=[Depends(require_internal_token)])
 async def internal_product_stock(product_id: str):
     return await _resources()[1].get_product_stock(product_id)
+
+
+@app.get("/internal/categories", dependencies=[Depends(require_internal_token)])
+async def internal_categories(request: Request):
+    return await _category_resource().list(_catalog_params(request, {"attrs", "limit", "page", "sort"}))
+
+
+@app.get("/internal/categories/tree/{category_id}", dependencies=[Depends(require_internal_token)])
+async def internal_category_tree(category_id: str):
+    return await _category_resource().tree(category_id)
+
+
+@app.get("/internal/categories/{category_id}", dependencies=[Depends(require_internal_token)])
+async def internal_category(category_id: str):
+    return await _category_resource().get(category_id)
 
 
 @app.get("/internal/brands", dependencies=[Depends(require_internal_token)])

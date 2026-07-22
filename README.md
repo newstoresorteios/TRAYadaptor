@@ -42,6 +42,8 @@ python -m compileall app tests
 | Health | `GET /health` |
 | Diagnóstico somente leitura | `GET /tray/test-auth`, `/tray/test-products`, `/tray/test-resources` |
 | Produtos | `GET /internal/products`, `GET /internal/products/{id}`, `GET /internal/products/{id}/stock` |
+| Variantes de produto | `GET /internal/products/variants`, `GET /internal/products/variants/{id}` |
+| Categorias | `GET /internal/categories`, `GET /internal/categories/{id}`, `GET /internal/categories/tree/{id}` |
 | Marcas | `GET /internal/brands`, `GET /internal/brands/{id}` |
 | Kits | `GET /internal/kits` |
 | MultiCD | `GET /internal/inventory/distribution-centers`, `GET /internal/inventory/distribution-centers/{id}`, `GET /internal/inventory/products/{id}/distribution-centers` |
@@ -58,6 +60,8 @@ As rotas internas são somente leitura. Operações POST/PUT/DELETE existem nos 
 |---|---|---|
 | Auth | `/auth` | POST auth e POST refresh interno |
 | Products | `/products`, `/products/{id}` | GET, POST, PUT, DELETE |
+| Product variants | `/products/variants/`, `/products/variants/{id}` | GET |
+| Categories | `/categories/`, `/categories/{id}`, `/categories/tree/{id}` | GET |
 | Brands | `/products/brands`, `/products/brands/{id}` | GET, POST, PUT, DELETE |
 | Kits | `/products/kits` | GET |
 | Inventory | `/products/{id}` | GET e PUT de estoque |
