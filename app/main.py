@@ -86,8 +86,31 @@ def _params(request: Request, allowed: set[str], limit_default: int = 20, limit_
     return values
 
 
-PRODUCT_FILTERS = {"id", "name", "reference", "category_id", "ean", "price", "price_range", "brand", "available", "available_in_store", "stock", "promotion", "free_shipping", "release", "hot", "quantity_sold", "release_date", "rand", "sort", "limit", "page", "attrs", "created", "modified"}
+PRODUCT_FILTERS = {
+    "id", "name", "reference", "category_id", "ean", "price", "price_range",
+    "brand", "brand_id", "model", "available", "available_in_store", "stock",
+    "promotion", "free_shipping", "release", "hot", "quantity_sold",
+    "release_date", "rand", "sort", "limit", "page", "attrs", "created",
+    "modified", "property_name", "property_id", "property_value",
+    "property_value_id", "current_price", "current_price_range",
+}
 CUSTOMER_FILTERS = {"id", "name", "email", "cpf", "cnpj", "created", "modified", "attrs", "limit", "page", "sort"}
+
+
+def _product_params(request: Request) -> dict[str, Any]:
+    values = {
+        key: value
+        for key, value in request.query_params.items()
+        if key in PRODUCT_FILTERS and value != ""
+    }
+    try:
+        limit = int(values.get("limit", 20))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="limit must be an integer") from exc
+    if not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
+    values["limit"] = limit
+    return values
 
 
 def normalize_products(payload: Any) -> list[dict[str, Any]]:
@@ -98,7 +121,7 @@ def normalize_products(payload: Any) -> list[dict[str, Any]]:
 @app.get("/internal/products", dependencies=[Depends(require_internal_token)])
 async def internal_products(request: Request):
     _, resource, *_ = _resources()
-    return await resource.list(_params(request, PRODUCT_FILTERS))
+    return await resource.list(_product_params(request))
 
 
 @app.get("/internal/products/{product_id}", dependencies=[Depends(require_internal_token)])

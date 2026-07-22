@@ -7,8 +7,9 @@ def normalize_variant(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_product(value: dict[str, Any]) -> dict[str, Any]:
-    settings = value.get("ProductSettings", value.get("product_settings"))
+    settings = first(value, "ProductSettings", "product_settings", "settings")
     settings = settings if isinstance(settings, dict) else None
+    properties = first(value, "properties", "Properties")
     promotional = first(value, "promotional_price", "promotionalPrice")
     if promotional in ("0", "0.0", "0.00", 0, 0.0):
         promotional = None
@@ -20,15 +21,20 @@ def normalize_product(value: dict[str, Any]) -> dict[str, Any]:
         "description": value.get("description"), "description_small": value.get("description_small"),
         "ean": value.get("ean"), "reference": first(value, "reference", "sku"), "brand": value.get("brand"),
         "brand_id": value.get("brand_id"), "model": value.get("model"), "category_id": value.get("category_id"),
+        "related_categories": first(value, "related_categories", "RelatedCategories"),
         "category_name": value.get("category_name"), "price": number(value.get("price")),
-        "promotional_price": number(promotional), "current_price": number(first(value, "current_price", "price")),
+        "promotional_price": number(promotional), "current_price": number(value.get("current_price")),
+        "start_promotion": value.get("start_promotion"), "end_promotion": value.get("end_promotion"),
         "stock": number(first(value, "stock", "quantity"), True),
-        "available": first(value, "available", "availability"), "available_in_store": value.get("available_in_store"),
+        "available": value.get("available"), "available_in_store": value.get("available_in_store"),
         "available_in_store_raw": value.get("available_in_store"), "available_for_purchase": value.get("available_for_purchase"),
         "availability": value.get("availability"), "availability_days": value.get("availability_days"),
         "upon_request": value.get("upon_request"), "is_kit": value.get("is_kit"), "has_variation": value.get("has_variation"),
-        "quantity_sold": number(value.get("quantity_sold"), True), "free_shipping": value.get("free_shipping"),
-        "url": first(value, "url", "product_url"), "images": value.get("images"), "properties": value.get("properties"),
+        "quantity_sold": number(value.get("quantity_sold"), True), "hot": value.get("hot"),
+        "release": value.get("release"), "promotion": value.get("promotion"),
+        "free_shipping": value.get("free_shipping"),
+        "url": first(value, "url", "product_url"), "images": value.get("images"),
+        "properties": properties if properties is not None else [],
         "variants": [normalize_variant(v) for v in variants if isinstance(v, dict)],
         "payment_option": value.get("payment_option"), "payment_option_details": value.get("payment_option_details"),
         "product_settings": settings or value.get("product_settings"),

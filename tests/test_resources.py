@@ -53,6 +53,25 @@ async def test_product_normalization_and_crud():
     await resource.create({"Product": {"name": "x"}}); await resource.update("1", {"Product": {"name": "y"}}); await resource.delete("1")
 
 
+def test_product_normalizes_uppercase_properties_and_recommendation_fields():
+    product = normalize_product({
+        "id": "1", "name": "Relógio Teste", "brand_id": "10", "model": "Classic",
+        "Properties": [{"name": "Cor", "value": "Preto", "property_id": "7"}],
+        "related_categories": [{"id": "3"}], "start_promotion": "2026-07-01",
+        "end_promotion": "2026-07-31", "hot": "1", "release": "0",
+        "promotion": "1", "current_price": "139.00",
+    })
+    assert product["properties"] == [{"name": "Cor", "value": "Preto", "property_id": "7"}]
+    assert product["related_categories"] == [{"id": "3"}]
+    assert product["current_price"] == 139.0
+    assert product["start_promotion"] == "2026-07-01"
+
+
+def test_product_keeps_lowercase_properties_compatible():
+    properties = [{"name": "Material", "value": "Aço", "extra": "preserved"}]
+    assert normalize_product({"id": "2", "properties": properties})["properties"] == properties
+
+
 @pytest.mark.asyncio
 async def test_brand_kit_customer_and_user_resources():
     async def handler(request):
