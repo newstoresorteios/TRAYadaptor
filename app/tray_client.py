@@ -103,6 +103,9 @@ def _safe_response_diagnostics(response: httpx.Response) -> dict[str, Any]:
     field_names = _error_field_names(payload)
     if field_names:
         diagnostics["error_fields"] = field_names
+    error_message = _safe_error_message(payload.get("message"))
+    if error_message is not None:
+        diagnostics["error_message"] = error_message
     return diagnostics
 
 
@@ -138,6 +141,34 @@ def _safe_scalar(value: Any) -> str | int | float | bool | None:
     ):
         return None
     return value
+
+
+def _safe_error_message(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    lowered = text.lower()
+    if (
+        not text
+        or len(text) > 160
+        or "@" in text
+        or "http://" in lowered
+        or "https://" in lowered
+        or any(
+            sensitive in lowered
+            for sensitive in (
+                "access_token",
+                "authorization",
+                "password",
+                "secret",
+                "session_id",
+                "consumer_key",
+                "consumer_secret",
+            )
+        )
+    ):
+        return None
+    return text
 
 
 def _error_field_names(payload: dict[str, Any]) -> list[str]:

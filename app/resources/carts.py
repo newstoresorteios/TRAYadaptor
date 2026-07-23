@@ -23,7 +23,7 @@ class CartResource:
             _boolean(payload.get("session_id") is not None),
         )
         try:
-            cart = _tray_cart_payload(payload)
+            cart_form = _tray_cart_form(payload)
         except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             logger.info(
                 "[tray.cart.failure] stage=payload_translation "
@@ -36,7 +36,7 @@ class CartResource:
             response = await self.client.request(
                 "POST",
                 "/carts/",
-                json={"Cart": cart},
+                data=cart_form,
                 retry_on_auth_failure=False,
                 request_observer=_log_request_sent,
                 response_observer=_log_upstream_response,
@@ -100,16 +100,42 @@ def _decimal_string(value: Any) -> str:
     return format(value if isinstance(value, Decimal) else Decimal(str(value)), "f")
 
 
-def _tray_cart_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _tray_cart_form(payload: dict[str, Any]) -> dict[str, str]:
+    product_id = _numeric_identifier(payload["product_id"])
+    quantity = payload["quantity"]
+    if not _quantity_is_valid(quantity):
+        raise ValueError("quantity must be an integer greater than zero")
+    if not _price_is_valid(payload["price"]):
+        raise ValueError("price must be a finite non-negative decimal")
+
     cart = {
-        "product_id": payload["product_id"],
-        "quantity": payload["quantity"],
-        "price": _decimal_string(payload["price"]),
+        '["Cart"]["product_id"]': product_id,
+        '["Cart"]["quantity"]': str(quantity),
+        '["Cart"]["price"]': _decimal_string(payload["price"]),
     }
-    for key in ("variant_id", "session_id"):
-        if payload.get(key) is not None:
-            cart[key] = payload[key]
+    variant_id = _optional_identifier(payload.get("variant_id"), numeric=True)
+    if variant_id is not None:
+        cart['["Cart"]["variant_id"]'] = variant_id
+    session_id = _optional_identifier(payload.get("session_id"))
+    if session_id is not None:
+        cart['["Cart"]["session_id"]'] = session_id
     return cart
+
+
+def _numeric_identifier(value: Any) -> str:
+    text = str(value).strip()
+    if not text.isascii() or not text.isdecimal() or int(text) < 1:
+        raise ValueError("identifier must be a positive integer")
+    return text
+
+
+def _optional_identifier(value: Any, *, numeric: bool = False) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null"}:
+        raise ValueError("optional identifier is invalid")
+    return _numeric_identifier(text) if numeric else text
 
 
 def _quantity_is_valid(value: Any) -> bool:
@@ -139,7 +165,7 @@ def _log_upstream_response(diagnostics: dict[str, Any]) -> None:
     logger.info(
         "[tray.cart.upstream] request_sent=true response_received=%s "
         "status_code=%s response_is_json=%s response_keys=%s "
-        "error_code=%s error_type=%s error_fields=%s",
+        "error_code=%s error_type=%s error_fields=%s error_message=%s",
         _boolean(bool(diagnostics.get("response_received"))),
         diagnostics.get("status_code", "none"),
         _boolean(bool(diagnostics.get("response_is_json"))),
@@ -147,4 +173,5 @@ def _log_upstream_response(diagnostics: dict[str, Any]) -> None:
         diagnostics.get("error_code", "none"),
         diagnostics.get("error_type", "none"),
         diagnostics.get("error_fields", []),
+        diagnostics.get("error_message", "none"),
     )

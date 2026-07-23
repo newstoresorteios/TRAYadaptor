@@ -12,9 +12,18 @@ class CartCreateRequest(BaseModel):
     price: Decimal = Field(ge=0)
     session_id: str | None = Field(default=None, min_length=1)
 
-    @field_validator("product_id", "variant_id", "session_id")
+    @field_validator("product_id", "variant_id")
     @classmethod
-    def reject_null_strings(cls, value: str | None) -> str | None:
+    def validate_numeric_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.isascii() or not value.isdecimal() or int(value) < 1:
+            raise ValueError("must be a positive numeric identifier")
+        return value
+
+    @field_validator("session_id")
+    @classmethod
+    def reject_null_session(cls, value: str | None) -> str | None:
         if value is not None and value.lower() in {"none", "null"}:
             raise ValueError("must be null or a valid identifier")
         return value
