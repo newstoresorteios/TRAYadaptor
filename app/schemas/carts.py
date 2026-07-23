@@ -1,13 +1,20 @@
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CartCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
     product_id: str = Field(min_length=1)
-    variant_id: str | None = None
+    variant_id: str | None = Field(default=None, min_length=1)
     quantity: int = Field(ge=1)
     price: Decimal = Field(ge=0)
-    session_id: str | None = None
+    session_id: str | None = Field(default=None, min_length=1)
+
+    @field_validator("product_id", "variant_id", "session_id")
+    @classmethod
+    def reject_null_strings(cls, value: str | None) -> str | None:
+        if value is not None and value.lower() in {"none", "null"}:
+            raise ValueError("must be null or a valid identifier")
+        return value

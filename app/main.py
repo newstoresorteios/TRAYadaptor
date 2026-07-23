@@ -1,6 +1,7 @@
 from typing import Any
 
 import hmac
+import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -26,6 +27,22 @@ from .tray_client import TrayClient
 
 app = FastAPI(title="TrayAdapter")
 _tray_client: TrayClient | None = None
+cart_logger = logging.getLogger("tray.cart")
+
+
+@app.middleware("http")
+async def cart_validation_observability(request: Request, call_next):
+    response = await call_next(request)
+    if (
+        request.method == "POST"
+        and request.url.path == "/internal/carts"
+        and response.status_code == 422
+    ):
+        cart_logger.info(
+            "[tray.cart.failure] stage=internal_validation "
+            "error_type=request_validation upstream_status=none"
+        )
+    return response
 
 
 def _client() -> TrayClient:

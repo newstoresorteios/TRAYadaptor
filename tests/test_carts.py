@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.config import Settings
-from app.exceptions import TrayAPIError
+from app.exceptions import TrayAPIError, TrayConnectionError, TrayValidationError
 from app.resources.carts import CartResource
 from app.tray_auth import TrayAuth
 from app.tray_client import TrayClient
@@ -37,7 +37,8 @@ def configure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cart_create_payload_optional_fields_and_normalization():
+async def test_cart_create_payload_optional_fields_and_normalization(caplog):
+    caplog.set_level("INFO", logger="tray.cart")
     payloads = []
 
     async def handler(request):
@@ -47,14 +48,26 @@ async def test_cart_create_payload_optional_fields_and_normalization():
         return response(request, {"id": "77", "session_id": "SESSION", "cart_url": "https://store.test/cart?session=SESSION", "message": "Created", "code": 201}, 201)
 
     resource = CartResource(client(handler))
-    first = await resource.create({"product_id": "123", "variant_id": None, "quantity": 1, "price": Decimal("50.00"), "session_id": None})
-    await resource.create({"product_id": "123", "variant_id": "900", "quantity": 2, "price": Decimal("49.90")})
-    await resource.create({"product_id": "123", "quantity": 1, "price": Decimal("50.00"), "session_id": "EXISTING"})
+    first = await resource.create({"product_id": "123", "variant_id": None, "quantity": 1, "price": Decimal("6399.99"), "session_id": None})
+    await resource.create({"product_id": "123", "variant_id": "900", "quantity": 1, "price": Decimal("6399.99")})
+    await resource.create({"product_id": "456", "quantity": 1, "price": Decimal("100.00"), "session_id": "S"})
 
-    assert payloads[0] == {"Cart": {"product_id": "123", "quantity": 1, "price": "50.00"}}
+    assert payloads[0] == {"Cart": {"product_id": "123", "quantity": 1, "price": "6399.99"}}
     assert payloads[1]["Cart"]["variant_id"] == "900"
-    assert payloads[2]["Cart"]["session_id"] == "EXISTING"
+    assert payloads[1]["Cart"]["price"] == "6399.99"
+    assert payloads[2] == {
+        "Cart": {
+            "product_id": "456",
+            "quantity": 1,
+            "price": "100.00",
+            "session_id": "S",
+        }
+    }
     assert first == {"success": True, "cart": {"cart_id": "77", "session_id": "SESSION", "cart_url": "https://store.test/cart?session=SESSION", "message": "Created", "code": 201}}
+    assert "[tray.cart.request]" in caplog.text
+    assert "status_code=201" in caplog.text
+    assert "response_is_json=true" in caplog.text
+    assert "https://store.test/cart" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -178,8 +191,9 @@ class FakeCartResource:
         return {"success": True, "cart": {"session_id": session_id, "items": []}}
 
 
-def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch):
+def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch, caplog):
     configure(monkeypatch)
+    caplog.set_level("INFO", logger="tray.cart")
     resource = FakeCartResource()
     monkeypatch.setattr(main, "_cart_resource", lambda: resource)
     api = TestClient(main.app)
@@ -194,7 +208,10 @@ def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch):
     assert api.get("/internal/carts/SESSION/complete", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
     assert api.post("/internal/carts", json={**body, "quantity": 0}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
     assert api.post("/internal/carts", json={**body, "price": "invalid"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
+    assert api.post("/internal/carts", json={**body, "variant_id": "null"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
+    assert api.post("/internal/carts", json={**body, "session_id": "None"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
     assert len(resource.calls) == 1
+    assert "stage=internal_validation" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -231,13 +248,27 @@ async def test_cart_post_401_is_not_retried_after_write_attempt():
     assert cart_calls == 1
 
 
-def test_cart_upstream_400_is_normalized(monkeypatch):
+def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, caplog):
     configure(monkeypatch)
+    caplog.set_level("INFO", logger="tray.cart")
+    cart_calls = 0
 
     async def handler(request):
+        nonlocal cart_calls
         if request.url.path.endswith("/auth"):
             return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
-        return response(request, {"message": "Invalid cart"}, 400)
+        cart_calls += 1
+        return response(
+            request,
+            {
+                "code": 400,
+                "name": "Bad Request",
+                "url": "https://tray.test/carts/?access_token=SECRET",
+                "access_token": "SECRET",
+                "causes": [{"field": "variant_id", "message": "invalid"}],
+            },
+            400,
+        )
 
     resource = CartResource(client(handler))
     monkeypatch.setattr(main, "_cart_resource", lambda: resource)
@@ -245,3 +276,72 @@ def test_cart_upstream_400_is_normalized(monkeypatch):
     result = api.post("/internal/carts", json={"product_id": "123", "quantity": 1, "price": "50.00"}, headers={"Authorization": "Bearer adapter-token"})
     assert result.status_code == 400
     assert result.json() == {"success": False, "error": "tray_api_error", "status_code": 400}
+    assert cart_calls == 1
+    assert "stage=upstream_http" in caplog.text
+    assert "upstream_status=400" in caplog.text
+    assert "response_is_json=true" in caplog.text
+    assert "error_fields=['variant_id']" in caplog.text
+    assert "SECRET" not in caplog.text
+    assert "access_token" not in caplog.text
+    assert "https://tray.test/carts/" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_post_timeout_is_not_retried(caplog):
+    caplog.set_level("INFO", logger="tray.cart")
+    cart_calls = 0
+
+    async def handler(request):
+        nonlocal cart_calls
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        cart_calls += 1
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    with pytest.raises(TrayConnectionError):
+        await CartResource(client(handler)).create({
+            "product_id": "123",
+            "quantity": 1,
+            "price": Decimal("6399.99"),
+        })
+
+    assert cart_calls == 1
+    assert "stage=upstream_http" in caplog.text
+    assert "error_type=TrayConnectionError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_payload_translation_failure_is_identified(caplog):
+    caplog.set_level("INFO", logger="tray.cart")
+
+    with pytest.raises(TrayValidationError, match="cart_payload_invalid"):
+        await CartResource(client(lambda request: response(request, {}))).create({
+            "product_id": "123",
+            "quantity": 1,
+            "price": "not-a-decimal",
+        })
+
+    assert "stage=payload_translation" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_normalization_failure_is_identified(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="tray.cart")
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(request, {"id": "1", "session_id": "S"}, 201)
+
+    def fail_normalization(_):
+        raise RuntimeError("normalization failed")
+
+    monkeypatch.setattr("app.resources.carts.normalize_cart", fail_normalization)
+    with pytest.raises(RuntimeError, match="normalization failed"):
+        await CartResource(client(handler)).create({
+            "product_id": "123",
+            "quantity": 1,
+            "price": Decimal("6399.99"),
+        })
+
+    assert "stage=normalization" in caplog.text
