@@ -1,6 +1,7 @@
 from typing import Any
 
 from .common import number
+from .image import normalize_images, primary_image_url
 
 
 def _unwrap_variant(raw: Any) -> dict[str, Any]:
@@ -23,6 +24,9 @@ def _normalize_sku(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(value, dict):
             continue
         sku = {key: value[key] for key in ("type", "value") if key in value}
+        image_url = value.get("image_secure") or value.get("image")
+        if image_url:
+            sku["image_url"] = image_url
         if sku:
             result.append(sku)
     return result
@@ -52,4 +56,7 @@ def normalize_variant(raw: Any) -> dict[str, Any]:
             for key in ("when_stock_runs_out", "order_days_availability")
             if key in settings
         }
+    images = normalize_images(value.get("VariantImage") or value.get("images"))
+    result["images"] = images
+    result["primary_image_url"] = primary_image_url(images)
     return result

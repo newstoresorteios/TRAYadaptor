@@ -1,0 +1,247 @@
+import json
+from decimal import Decimal
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from app import main
+from app.config import Settings
+from app.exceptions import TrayAPIError
+from app.resources.carts import CartResource
+from app.tray_auth import TrayAuth
+from app.tray_client import TrayClient
+
+
+def settings():
+    return Settings("https://tray.test/web_api", "code", "key", "secret", 180, "687890")
+
+
+def response(request, body, status=200):
+    return httpx.Response(status, json=body, request=request)
+
+
+def client(handler):
+    transport = httpx.MockTransport(handler)
+    auth = TrayAuth(settings(), httpx.AsyncClient(transport=transport))
+    return TrayClient(auth, auth.http_client)
+
+
+def configure(monkeypatch):
+    for key, value in {
+        "TRAY_API_BASE": "https://tray.test/web_api", "TRAY_CODE": "code",
+        "TRAY_CONSUMER_KEY": "key", "TRAY_CONSUMER_SECRET": "secret",
+        "TRAY_STORE_CODE": "687890", "TRAY_ADAPTER_TOKEN": "adapter-token",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+
+@pytest.mark.asyncio
+async def test_cart_create_payload_optional_fields_and_normalization():
+    payloads = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        payloads.append(json.loads(request.content))
+        return response(request, {"id": "77", "session_id": "SESSION", "cart_url": "https://store.test/cart?session=SESSION", "message": "Created", "code": 201}, 201)
+
+    resource = CartResource(client(handler))
+    first = await resource.create({"product_id": "123", "variant_id": None, "quantity": 1, "price": Decimal("50.00"), "session_id": None})
+    await resource.create({"product_id": "123", "variant_id": "900", "quantity": 2, "price": Decimal("49.90")})
+    await resource.create({"product_id": "123", "quantity": 1, "price": Decimal("50.00"), "session_id": "EXISTING"})
+
+    assert payloads[0] == {"Cart": {"product_id": "123", "quantity": 1, "price": "50.00"}}
+    assert payloads[1]["Cart"]["variant_id"] == "900"
+    assert payloads[2]["Cart"]["session_id"] == "EXISTING"
+    assert first == {"success": True, "cart": {"cart_id": "77", "session_id": "SESSION", "cart_url": "https://store.test/cart?session=SESSION", "message": "Created", "code": 201}}
+
+
+@pytest.mark.asyncio
+async def test_cart_read_uses_session_path_and_normalizes_useful_fields():
+    paths = []
+
+    async def handler(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(request, {"Cart": {"session_id": "SESSION", "product_id": "123", "product_name": "Produto", "variant_id": "900", "quantity": "2", "price": "49.90"}})
+
+    result = await CartResource(client(handler)).get("SESSION")
+    assert paths[-1] == "/web_api/carts/SESSION"
+    assert result["cart"] == {"session_id": "SESSION", "product_id": "123", "product_name": "Produto", "variant_id": "900", "quantity": 2, "price": 49.9}
+
+
+@pytest.mark.asyncio
+async def test_cart_complete_normalizes_multiple_items_prices_quantities_and_images():
+    paths = []
+
+    async def handler(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(request, {
+            "Cart": {
+                "session_id": "SESSION",
+                "sub_total": "149.80",
+                "total": "149.80",
+                "Products": [
+                    {
+                        "id": "123",
+                        "cart_id": "c1",
+                        "name": "Produto A",
+                        "quantity": "2",
+                        "price": "49.90",
+                        "stock": "8",
+                        "available": "1",
+                        "ProductImage": [{"https": "https://tray.test/a.jpg"}],
+                    },
+                    {
+                        "id": "456",
+                        "cart_id": "c2",
+                        "name": "Produto B",
+                        "variant_id": "v2",
+                        "quantity": "1",
+                        "price": "50.00",
+                        "stock": "3",
+                        "ProductImage": [{"https": "https://tray.test/b.jpg"}],
+                    },
+                ],
+            }
+        })
+
+    result = await CartResource(client(handler)).complete("SESSION")
+
+    assert paths[-1] == "/web_api/carts/SESSION/complete"
+    assert result["cart"]["sub_total"] == 149.8
+    assert result["cart"]["total"] == 149.8
+    assert result["cart"]["items"][0]["product_id"] == "123"
+    assert result["cart"]["items"][0]["quantity"] == 2
+    assert result["cart"]["items"][0]["price"] == 49.9
+    assert result["cart"]["items"][0]["primary_image_url"] == "https://tray.test/a.jpg"
+    assert result["cart"]["items"][1]["variant_id"] == "v2"
+    assert len(result["cart"]["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_successive_cart_posts_transport_returned_session_id():
+    payloads = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        payloads.append(json.loads(request.content))
+        return response(
+            request,
+            {"id": str(len(payloads)), "session_id": "SHARED-SESSION", "code": 201},
+            201,
+        )
+
+    resource = CartResource(client(handler))
+    first = await resource.create({
+        "product_id": "A",
+        "quantity": 1,
+        "price": Decimal("10.00"),
+    })
+    await resource.create({
+        "product_id": "B",
+        "quantity": 2,
+        "price": Decimal("20.00"),
+        "session_id": first["cart"]["session_id"],
+    })
+
+    assert payloads == [
+        {"Cart": {"product_id": "A", "quantity": 1, "price": "10.00"}},
+        {
+            "Cart": {
+                "product_id": "B",
+                "quantity": 2,
+                "price": "20.00",
+                "session_id": "SHARED-SESSION",
+            }
+        },
+    ]
+
+
+class FakeCartResource:
+    def __init__(self):
+        self.calls = []
+
+    async def create(self, payload):
+        self.calls.append(payload)
+        return {"success": True, "cart": {"session_id": "SESSION"}}
+
+    async def get(self, session_id):
+        return {"success": True, "cart": {"session_id": session_id}}
+
+    async def complete(self, session_id):
+        return {"success": True, "cart": {"session_id": session_id, "items": []}}
+
+
+def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch):
+    configure(monkeypatch)
+    resource = FakeCartResource()
+    monkeypatch.setattr(main, "_cart_resource", lambda: resource)
+    api = TestClient(main.app)
+    body = {"product_id": "123", "variant_id": None, "quantity": 1, "price": "50.00", "session_id": None}
+
+    assert api.post("/internal/carts", json=body).status_code == 401
+    assert api.post("/internal/carts", json=body, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert api.get("/internal/carts/SESSION").status_code == 401
+    assert api.get("/internal/carts/SESSION/complete").status_code == 401
+    assert api.post("/internal/carts", json=body, headers={"Authorization": "Bearer adapter-token"}).status_code == 200
+    assert api.get("/internal/carts/SESSION", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
+    assert api.get("/internal/carts/SESSION/complete", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
+    assert api.post("/internal/carts", json={**body, "quantity": 0}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
+    assert api.post("/internal/carts", json={**body, "price": "invalid"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
+    assert len(resource.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cart_post_503_is_not_retried():
+    cart_calls = 0
+
+    async def handler(request):
+        nonlocal cart_calls
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        cart_calls += 1
+        return response(request, {"message": "Unavailable"}, 503)
+
+    with pytest.raises(TrayAPIError) as error:
+        await CartResource(client(handler)).create({"product_id": "123", "quantity": 1, "price": Decimal("50.00")})
+    assert error.value.status_code == 503
+    assert cart_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cart_post_401_is_not_retried_after_write_attempt():
+    cart_calls = 0
+
+    async def handler(request):
+        nonlocal cart_calls
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        cart_calls += 1
+        return response(request, {"message": "Unauthorized"}, 401)
+
+    with pytest.raises(TrayAPIError) as error:
+        await CartResource(client(handler)).create({"product_id": "123", "quantity": 1, "price": Decimal("50.00")})
+    assert error.value.status_code == 401
+    assert cart_calls == 1
+
+
+def test_cart_upstream_400_is_normalized(monkeypatch):
+    configure(monkeypatch)
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(request, {"message": "Invalid cart"}, 400)
+
+    resource = CartResource(client(handler))
+    monkeypatch.setattr(main, "_cart_resource", lambda: resource)
+    api = TestClient(main.app)
+    result = api.post("/internal/carts", json={"product_id": "123", "quantity": 1, "price": "50.00"}, headers={"Authorization": "Bearer adapter-token"})
+    assert result.status_code == 400
+    assert result.json() == {"success": False, "error": "tray_api_error", "status_code": 400}

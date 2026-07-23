@@ -14,6 +14,7 @@ class TrayClient:
     async def request(
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
         data: Any = None, json: Any = None, headers: dict[str, str] | None = None,
+        retry_on_auth_failure: bool = True,
     ) -> Any:
         token = await self.auth.get_valid_token()
         for attempt in range(2):
@@ -29,7 +30,7 @@ class TrayClient:
                 raise TrayConnectionError("Tray request timed out") from exc
             except httpx.RequestError as exc:
                 raise TrayConnectionError("Could not connect to Tray") from exc
-            if response.status_code == 401 and attempt == 0:
+            if response.status_code == 401 and attempt == 0 and retry_on_auth_failure:
                 token = await self.auth.refresh()
                 continue
             if response.is_error:

@@ -1,9 +1,14 @@
 from typing import Any
 from .common import first, number
+from .image import normalize_images, primary_image_url
 
 
 def normalize_variant(value: dict[str, Any]) -> dict[str, Any]:
-    return {key: value[key] for key in ("id", "reference", "ean", "price", "promotional_price", "stock", "available", "properties", "settings") if key in value}
+    result = {key: value[key] for key in ("id", "reference", "ean", "price", "promotional_price", "stock", "available", "properties", "settings") if key in value}
+    images = normalize_images(value.get("VariantImage") or value.get("images"))
+    result["images"] = images
+    result["primary_image_url"] = primary_image_url(images)
+    return result
 
 
 def normalize_product(value: dict[str, Any]) -> dict[str, Any]:
@@ -16,6 +21,7 @@ def normalize_product(value: dict[str, Any]) -> dict[str, Any]:
     variants = value.get("Variant", value.get("variants", []))
     if isinstance(variants, dict):
         variants = [variants]
+    images = normalize_images(value.get("ProductImage") or value.get("images"))
     return {
         "id": first(value, "id", "product_id"), "name": value.get("name"), "title": value.get("title"),
         "description": value.get("description"), "description_small": value.get("description_small"),
@@ -33,7 +39,8 @@ def normalize_product(value: dict[str, Any]) -> dict[str, Any]:
         "quantity_sold": number(value.get("quantity_sold"), True), "hot": value.get("hot"),
         "release": value.get("release"), "promotion": value.get("promotion"),
         "free_shipping": value.get("free_shipping"),
-        "url": first(value, "url", "product_url"), "images": value.get("images"),
+        "url": first(value, "url", "product_url"), "images": images,
+        "primary_image_url": primary_image_url(images),
         "properties": properties if properties is not None else [],
         "variants": [normalize_variant(v) for v in variants if isinstance(v, dict)],
         "payment_option": value.get("payment_option"), "payment_option_details": value.get("payment_option_details"),

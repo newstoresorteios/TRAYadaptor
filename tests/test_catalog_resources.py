@@ -62,7 +62,8 @@ async def test_variants_list_detail_filters_sku_prices_stock_and_settings():
             "id": "900", "product_id": "123", "ean": "789", "price": "139.00",
             "promotional_price": "119.00", "stock": "4", "minimum_stock": "1",
             "reference": "REF-PRETO", "quantity_sold": "7", "availability_days": "3",
-            "Sku": [{"Sku": {"type": "Cor", "value": "Preto"}}],
+            "Sku": [{"Sku": {"type": "Cor", "value": "Preto", "image": "http://tray.test/sku.jpg", "image_secure": "https://tray.test/sku.jpg"}}],
+            "VariantImage": [{"http": "http://tray.test/variant.jpg", "https": "https://tray.test/variant.jpg"}],
             "VariationSettings": {"when_stock_runs_out": "sell_extended_lead_time", "order_days_availability": "5"},
         }
     }
@@ -83,7 +84,9 @@ async def test_variants_list_detail_filters_sku_prices_stock_and_settings():
     assert calls[1][2]["product_id"] == "123"
     assert calls[2][1] == "/web_api/products/variants/900"
     normalized = listed["variants"][0]
-    assert normalized["sku"] == [{"type": "Cor", "value": "Preto"}]
+    assert normalized["sku"] == [{"type": "Cor", "value": "Preto", "image_url": "https://tray.test/sku.jpg"}]
+    assert normalized["images"] == [{"url": "https://tray.test/variant.jpg", "thumb_180": None}]
+    assert normalized["primary_image_url"] == "https://tray.test/variant.jpg"
     assert normalized["price"] == 139.0
     assert normalized["promotional_price"] == 119.0
     assert normalized["stock"] == 4

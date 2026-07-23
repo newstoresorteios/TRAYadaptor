@@ -44,6 +44,9 @@ python -m compileall app tests
 | Produtos | `GET /internal/products`, `GET /internal/products/{id}`, `GET /internal/products/{id}/stock` |
 | Variantes de produto | `GET /internal/products/variants`, `GET /internal/products/variants/{id}` |
 | Categorias | `GET /internal/categories`, `GET /internal/categories/{id}`, `GET /internal/categories/tree/{id}` |
+| Carrinhos | `POST /internal/carts`, `GET /internal/carts/{session_id}` |
+| Carrinho completo | `GET /internal/carts/{session_id}/complete` |
+| Opções de pagamento | `GET /internal/payments/options?cart_session_id=...` |
 | Marcas | `GET /internal/brands`, `GET /internal/brands/{id}` |
 | Kits | `GET /internal/kits` |
 | MultiCD | `GET /internal/inventory/distribution-centers`, `GET /internal/inventory/distribution-centers/{id}`, `GET /internal/inventory/products/{id}/distribution-centers` |
@@ -52,7 +55,7 @@ python -m compileall app tests
 | Cupons | `GET /internal/coupons`, `GET /internal/coupons/{id}`, além das seis rotas de relacionamentos por tipo |
 | Usuários | `GET /internal/users` |
 
-As rotas internas são somente leitura. Operações POST/PUT/DELETE existem nos resources/client para uso futuro e são cobertas somente por mocks nesta etapa.
+As rotas internas são majoritariamente de leitura. A exceção atual é `POST /internal/carts`, que cria ou adiciona um item ao carrinho; as demais operações POST/PUT/DELETE disponíveis nos resources/client continuam sem rotas de execução automática.
 
 ## APIs Tray implementadas
 
@@ -62,6 +65,9 @@ As rotas internas são somente leitura. Operações POST/PUT/DELETE existem nos 
 | Products | `/products`, `/products/{id}` | GET, POST, PUT, DELETE |
 | Product variants | `/products/variants/`, `/products/variants/{id}` | GET |
 | Categories | `/categories/`, `/categories/{id}`, `/categories/tree/{id}` | GET |
+| Carts | `/carts/`, `/carts/{session_id}` | POST, GET |
+| Complete cart | `/carts/{session_id}/complete` | GET |
+| Payment options | `/payments/options` | GET |
 | Brands | `/products/brands`, `/products/brands/{id}` | GET, POST, PUT, DELETE |
 | Kits | `/products/kits` | GET |
 | Inventory | `/products/{id}` | GET e PUT de estoque |
@@ -84,3 +90,17 @@ Cupons calculam `ends_at` usando `TRAY_COUPON_VALID_DAYS` somente quando o calle
 O `render.yaml` contém apenas o Web Service, build e start command. As variáveis devem ser cadastradas no ambiente do Render sem valores versionados.
 
 As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/health` e as rotas `/tray/*` permanecem públicas.
+
+## Carrinhos
+
+`POST /internal/carts` recebe `product_id`, `quantity`, `price` e, opcionalmente, `variant_id` e `session_id`. O Adapter envia esses campos no objeto oficial `Cart` sem calcular preço, disponibilidade ou variante. Por segurança contra duplicação, a escrita não é repetida automaticamente após falha de autenticação ou erro upstream.
+
+`GET /internal/carts/{session_id}` consulta o carrinho simples. `GET /internal/carts/{session_id}/complete` preserva itens, preços, quantidades, estoque, disponibilidade, imagens e totais informados pela Tray.
+
+Para adicionar vários itens, a primeira chamada pode omitir `session_id`; chamadas posteriores enviam a `session_id` devolvida pela Tray. O Adapter apenas transporta esse identificador e não combina itens localmente.
+
+## Imagens e opções de pagamento
+
+Produtos e variantes preservam as imagens retornadas pela Tray, priorizando URLs HTTPS. O contrato normalizado contém `images` e `primary_image_url`; nenhuma URL é construída pelo Adapter.
+
+`GET /internal/payments/options?cart_session_id=...` consulta opções do carrinho e preserva valores, descontos, acréscimos, impostos e parcelas fornecidos pela Tray. Não há endpoint de criação de pagamento e nenhum dado de cartão é recebido.

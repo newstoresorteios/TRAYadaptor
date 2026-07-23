@@ -72,6 +72,60 @@ def test_product_keeps_lowercase_properties_compatible():
     assert normalize_product({"id": "2", "properties": properties})["properties"] == properties
 
 
+def test_product_images_prioritize_https_preserve_all_and_allow_empty():
+    product = normalize_product({
+        "id": "1",
+        "ProductImage": [
+            {
+                "http": "http://tray.test/original-1.jpg",
+                "https": "https://tray.test/original-1.jpg",
+                "thumbs": {
+                    "180": {
+                        "http": "http://tray.test/thumb-1.jpg",
+                        "https": "https://tray.test/thumb-1.jpg",
+                    }
+                },
+            },
+            {
+                "http": "http://tray.test/original-2.jpg",
+                "https": "https://tray.test/original-2.jpg",
+            },
+        ],
+    })
+
+    assert product["images"] == [
+        {
+            "url": "https://tray.test/original-1.jpg",
+            "thumb_180": "https://tray.test/thumb-1.jpg",
+        },
+        {"url": "https://tray.test/original-2.jpg", "thumb_180": None},
+    ]
+    assert product["primary_image_url"] == "https://tray.test/original-1.jpg"
+
+    without_image = normalize_product({"id": "2"})
+    assert without_image["images"] == []
+    assert without_image["primary_image_url"] is None
+
+
+def test_embedded_variant_preserves_only_its_own_image():
+    product = normalize_product({
+        "id": "1",
+        "ProductImage": [{"https": "https://tray.test/product.jpg"}],
+        "Variant": [
+            {
+                "id": "v1",
+                "VariantImage": [{"https": "https://tray.test/variant-v1.jpg"}],
+            }
+        ],
+    })
+
+    assert product["primary_image_url"] == "https://tray.test/product.jpg"
+    assert product["variants"][0]["images"] == [
+        {"url": "https://tray.test/variant-v1.jpg", "thumb_180": None}
+    ]
+    assert product["variants"][0]["primary_image_url"] == "https://tray.test/variant-v1.jpg"
+
+
 @pytest.mark.asyncio
 async def test_brand_kit_customer_and_user_resources():
     async def handler(request):

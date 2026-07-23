@@ -9,13 +9,16 @@ from .config import get_settings
 from .exceptions import TrayAPIError, TrayAuthenticationError, TrayConfigurationError, TrayConnectionError, TrayError, TrayValidationError
 from .resources.brands import BrandResource
 from .resources.categories import CategoryResource
+from .resources.carts import CartResource
 from .resources.coupons import CouponResource
 from .resources.customers import CustomerResource
 from .resources.inventory import InventoryResource
 from .resources.kits import KitResource
+from .resources.payments import PaymentOptionsResource
 from .resources.products import ProductResource
 from .resources.users import UserResource
 from .resources.variants import VariantResource
+from .schemas.carts import CartCreateRequest
 from .normalizers.common import items
 from .normalizers.product import normalize_product
 from .tray_auth import TrayAuth
@@ -44,6 +47,14 @@ def _category_resource() -> CategoryResource:
 
 def _variant_resource() -> VariantResource:
     return VariantResource(_client())
+
+
+def _cart_resource() -> CartResource:
+    return CartResource(_client())
+
+
+def _payment_options_resource() -> PaymentOptionsResource:
+    return PaymentOptionsResource(_client())
 
 
 def require_internal_token(request: Request) -> None:
@@ -191,6 +202,26 @@ async def internal_category_tree(category_id: str):
 @app.get("/internal/categories/{category_id}", dependencies=[Depends(require_internal_token)])
 async def internal_category(category_id: str):
     return await _category_resource().get(category_id)
+
+
+@app.post("/internal/carts", dependencies=[Depends(require_internal_token)])
+async def internal_cart_create(payload: CartCreateRequest):
+    return await _cart_resource().create(payload.model_dump(exclude_none=True))
+
+
+@app.get("/internal/carts/{session_id}/complete", dependencies=[Depends(require_internal_token)])
+async def internal_cart_complete(session_id: str):
+    return await _cart_resource().complete(session_id)
+
+
+@app.get("/internal/carts/{session_id}", dependencies=[Depends(require_internal_token)])
+async def internal_cart(session_id: str):
+    return await _cart_resource().get(session_id)
+
+
+@app.get("/internal/payments/options", dependencies=[Depends(require_internal_token)])
+async def internal_payment_options(cart_session_id: str = Query(..., min_length=1)):
+    return await _payment_options_resource().list_for_cart(cart_session_id)
 
 
 @app.get("/internal/brands", dependencies=[Depends(require_internal_token)])
