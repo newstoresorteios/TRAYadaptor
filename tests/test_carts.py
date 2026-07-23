@@ -14,6 +14,9 @@ from app.tray_auth import TrayAuth
 from app.tray_client import TrayClient
 
 
+SESSION_32 = "s" * 32
+
+
 def settings():
     return Settings("https://tray.test/web_api", "code", "key", "secret", 180, "687890")
 
@@ -50,12 +53,12 @@ async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
         if request.url.path.endswith("/auth"):
             return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
         requests.append(request)
-        return response(request, {"id": "77", "session_id": "SESSION", "cart_url": "https://store.test/cart?session=SESSION", "message": "Created", "code": 201}, 201)
+        return response(request, {"id": "77", "session_id": SESSION_32, "cart_url": "https://store.test/cart", "message": "Created", "code": 201}, 201)
 
     resource = CartResource(client(handler))
-    first = await resource.create({"product_id": "123", "variant_id": None, "quantity": 1, "price": Decimal("6399.99"), "session_id": None})
-    await resource.create({"product_id": "123", "variant_id": "900", "quantity": 1, "price": Decimal("6399.99")})
-    await resource.create({"product_id": "456", "quantity": 1, "price": Decimal("100.00"), "session_id": "S"})
+    first = await resource.create({"product_id": "123", "variant_id": None, "quantity": 1, "price": Decimal("6399.99"), "session_id": SESSION_32})
+    await resource.create({"product_id": "123", "variant_id": "900", "quantity": 1, "price": Decimal("6399.99"), "session_id": SESSION_32})
+    await resource.create({"product_id": "456", "variant_id": "0", "quantity": 1, "price": Decimal("100.00"), "session_id": SESSION_32})
 
     assert all(request.method == "POST" for request in requests)
     assert all(request.url.path == "/web_api/carts/" for request in requests)
@@ -66,28 +69,31 @@ async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
     )
     assert all(not request.content.startswith(b"{") for request in requests)
     assert requests[0].content == (
-        b"%5B%22Cart%22%5D%5B%22product_id%22%5D=123"
+        b"%5B%22Cart%22%5D%5B%22session_id%22%5D=ssssssssssssssssssssssssssssssss"
+        b"&%5B%22Cart%22%5D%5B%22product_id%22%5D=123"
         b"&%5B%22Cart%22%5D%5B%22quantity%22%5D=1"
         b"&%5B%22Cart%22%5D%5B%22price%22%5D=6399.99"
     )
     assert form_body(requests[0]) == {
+        '["Cart"]["session_id"]': SESSION_32,
         '["Cart"]["product_id"]': "123",
         '["Cart"]["quantity"]': "1",
         '["Cart"]["price"]': "6399.99",
     }
     assert form_body(requests[1]) == {
+        '["Cart"]["session_id"]': SESSION_32,
         '["Cart"]["product_id"]': "123",
         '["Cart"]["quantity"]': "1",
         '["Cart"]["price"]': "6399.99",
         '["Cart"]["variant_id"]': "900",
     }
     assert form_body(requests[2]) == {
+        '["Cart"]["session_id"]': SESSION_32,
         '["Cart"]["product_id"]': "456",
         '["Cart"]["quantity"]': "1",
         '["Cart"]["price"]': "100.00",
-        '["Cart"]["session_id"]': "S",
     }
-    assert first == {"success": True, "cart": {"cart_id": "77", "session_id": "SESSION", "cart_url": "https://store.test/cart?session=SESSION", "message": "Created", "code": 201}}
+    assert first == {"success": True, "cart": {"cart_id": "77", "session_id": SESSION_32, "cart_url": "https://store.test/cart", "message": "Created", "code": 201}}
     assert "[tray.cart.request]" in caplog.text
     assert "status_code=201" in caplog.text
     assert "response_is_json=true" in caplog.text
@@ -142,6 +148,7 @@ async def test_cart_create_accepts_upstream_200_success():
         "product_id": "123",
         "quantity": 1,
         "price": Decimal("50.00"),
+        "session_id": SESSION_32,
     })
 
     assert result == {
@@ -223,7 +230,7 @@ async def test_cart_complete_normalizes_multiple_items_prices_quantities_and_ima
 
 
 @pytest.mark.asyncio
-async def test_successive_cart_posts_transport_returned_session_id():
+async def test_successive_cart_posts_reuse_the_same_required_session_id():
     payloads = []
 
     async def handler(request):
@@ -232,34 +239,36 @@ async def test_successive_cart_posts_transport_returned_session_id():
         payloads.append(form_body(request))
         return response(
             request,
-            {"id": str(len(payloads)), "session_id": "SHARED-SESSION", "code": 201},
+            {"id": str(len(payloads)), "session_id": SESSION_32, "code": 201},
             201,
         )
 
     resource = CartResource(client(handler))
-    first = await resource.create({
+    await resource.create({
         "product_id": "101",
         "quantity": 1,
         "price": Decimal("10.00"),
+        "session_id": SESSION_32,
     })
     await resource.create({
         "product_id": "202",
         "quantity": 2,
         "price": Decimal("20.00"),
-        "session_id": first["cart"]["session_id"],
+        "session_id": SESSION_32,
     })
 
     assert payloads == [
         {
+            '["Cart"]["session_id"]': SESSION_32,
             '["Cart"]["product_id"]': "101",
             '["Cart"]["quantity"]': "1",
             '["Cart"]["price"]': "10.00",
         },
         {
+            '["Cart"]["session_id"]': SESSION_32,
             '["Cart"]["product_id"]': "202",
             '["Cart"]["quantity"]': "2",
             '["Cart"]["price"]': "20.00",
-            '["Cart"]["session_id"]': "SHARED-SESSION",
         },
     ]
 
@@ -285,12 +294,17 @@ def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch, ca
     resource = FakeCartResource()
     monkeypatch.setattr(main, "_cart_resource", lambda: resource)
     api = TestClient(main.app)
-    body = {"product_id": "123", "variant_id": None, "quantity": 1, "price": "50.00", "session_id": None}
+    body = {"product_id": "123", "variant_id": "0", "quantity": 1, "price": "50.00", "session_id": SESSION_32}
+    without_session = dict(body)
+    without_session.pop("session_id")
 
     assert api.post("/internal/carts", json=body).status_code == 401
     assert api.post("/internal/carts", json=body, headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert api.get("/internal/carts/SESSION").status_code == 401
     assert api.get("/internal/carts/SESSION/complete").status_code == 401
+    assert api.post("/internal/carts", json=without_session, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
+    assert api.post("/internal/carts", json={**body, "session_id": "x" * 33}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
+    assert len(resource.calls) == 0
     assert api.post("/internal/carts", json=body, headers={"Authorization": "Bearer adapter-token"}).status_code == 200
     assert api.get("/internal/carts/SESSION", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
     assert api.get("/internal/carts/SESSION/complete", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
@@ -301,7 +315,29 @@ def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch, ca
     assert api.post("/internal/carts", json={**body, "variant_id": "null"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
     assert api.post("/internal/carts", json={**body, "session_id": "None"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
     assert len(resource.calls) == 1
+    assert "variant_id" not in resource.calls[0]
     assert "stage=internal_validation" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_resource_missing_session_stops_before_upstream():
+    class RecordingClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def request(self, *args, **kwargs):
+            self.calls += 1
+            return {}
+
+    recording_client = RecordingClient()
+    with pytest.raises(TrayValidationError, match="cart_payload_invalid"):
+        await CartResource(recording_client).create({
+            "product_id": "123",
+            "quantity": 1,
+            "price": Decimal("50.00"),
+        })
+
+    assert recording_client.calls == 0
 
 
 @pytest.mark.asyncio
@@ -316,7 +352,7 @@ async def test_cart_post_503_is_not_retried():
         return response(request, {"message": "Unavailable"}, 503)
 
     with pytest.raises(TrayAPIError) as error:
-        await CartResource(client(handler)).create({"product_id": "123", "quantity": 1, "price": Decimal("50.00")})
+        await CartResource(client(handler)).create({"product_id": "123", "quantity": 1, "price": Decimal("50.00"), "session_id": SESSION_32})
     assert error.value.status_code == 503
     assert cart_calls == 1
 
@@ -333,7 +369,7 @@ async def test_cart_post_401_is_not_retried_after_write_attempt():
         return response(request, {"message": "Unauthorized"}, 401)
 
     with pytest.raises(TrayAPIError) as error:
-        await CartResource(client(handler)).create({"product_id": "123", "quantity": 1, "price": Decimal("50.00")})
+        await CartResource(client(handler)).create({"product_id": "123", "quantity": 1, "price": Decimal("50.00"), "session_id": SESSION_32})
     assert error.value.status_code == 401
     assert cart_calls == 1
 
@@ -353,7 +389,7 @@ def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, capl
             {
                 "code": 400,
                 "name": "Bad Request",
-                "message": "Cart data is invalid",
+                "message": "missing field: session_id",
                 "url": "https://tray.test/carts/?access_token=SECRET",
                 "access_token": "SECRET",
                 "causes": [{"field": "variant_id", "message": "invalid"}],
@@ -364,7 +400,7 @@ def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, capl
     resource = CartResource(client(handler))
     monkeypatch.setattr(main, "_cart_resource", lambda: resource)
     api = TestClient(main.app)
-    result = api.post("/internal/carts", json={"product_id": "123", "quantity": 1, "price": "50.00"}, headers={"Authorization": "Bearer adapter-token"})
+    result = api.post("/internal/carts", json={"product_id": "123", "quantity": 1, "price": "50.00", "session_id": SESSION_32}, headers={"Authorization": "Bearer adapter-token"})
     assert result.status_code == 400
     assert result.json() == {"success": False, "error": "tray_api_error", "status_code": 400}
     assert cart_calls == 1
@@ -372,7 +408,7 @@ def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, capl
     assert "upstream_status=400" in caplog.text
     assert "response_is_json=true" in caplog.text
     assert "error_fields=['variant_id']" in caplog.text
-    assert "error_message=Cart data is invalid" in caplog.text
+    assert "error_message=missing field: session_id" in caplog.text
     assert "SECRET" not in caplog.text
     assert "access_token" not in caplog.text
     assert "https://tray.test/carts/" not in caplog.text
@@ -396,11 +432,38 @@ async def test_cart_upstream_sensitive_error_message_is_not_logged(caplog):
             "product_id": "123",
             "quantity": 1,
             "price": Decimal("50.00"),
+            "session_id": SESSION_32,
         })
 
     assert "error_message=none" in caplog.text
     assert "SECRET" not in caplog.text
     assert "access_token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_upstream_session_value_is_redacted_from_error_message(caplog):
+    caplog.set_level("INFO", logger="tray.cart")
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(
+            request,
+            {"code": 400, "message": "Invalid session_id cart-session-value-123"},
+            400,
+        )
+
+    with pytest.raises(TrayAPIError):
+        await CartResource(client(handler)).create({
+            "product_id": "123",
+            "quantity": 1,
+            "price": Decimal("50.00"),
+            "session_id": SESSION_32,
+        })
+
+    assert "error_message=invalid field: session_id" in caplog.text
+    assert "cart-session-value-123" not in caplog.text
+    assert SESSION_32 not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -420,6 +483,7 @@ async def test_cart_post_timeout_is_not_retried(caplog):
             "product_id": "123",
             "quantity": 1,
             "price": Decimal("6399.99"),
+            "session_id": SESSION_32,
         })
 
     assert cart_calls == 1
@@ -436,6 +500,7 @@ async def test_cart_payload_translation_failure_is_identified(caplog):
             "product_id": "123",
             "quantity": 1,
             "price": "not-a-decimal",
+            "session_id": SESSION_32,
         })
 
     assert "stage=payload_translation" in caplog.text
@@ -459,6 +524,7 @@ async def test_cart_normalization_failure_is_identified(monkeypatch, caplog):
             "product_id": "123",
             "quantity": 1,
             "price": Decimal("6399.99"),
+            "session_id": SESSION_32,
         })
 
     assert "stage=normalization" in caplog.text

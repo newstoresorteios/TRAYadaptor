@@ -93,11 +93,11 @@ As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/he
 
 ## Carrinhos
 
-`POST /internal/carts` recebe `product_id`, `quantity`, `price` e, opcionalmente, `variant_id` e `session_id`. O Adapter envia esses campos no objeto oficial `Cart` sem calcular preço, disponibilidade ou variante. Por segurança contra duplicação, a escrita não é repetida automaticamente após falha de autenticação ou erro upstream.
+`POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O Adapter envia esses campos no objeto oficial `Cart` sem calcular preço, disponibilidade ou variante. Por segurança contra duplicação, a escrita não é repetida automaticamente após falha de autenticação ou erro upstream.
 
 `GET /internal/carts/{session_id}` consulta o carrinho simples. `GET /internal/carts/{session_id}/complete` preserva itens, preços, quantidades, estoque, disponibilidade, imagens e totais informados pela Tray.
 
-Para adicionar vários itens, a primeira chamada pode omitir `session_id`; chamadas posteriores enviam a `session_id` devolvida pela Tray. O Adapter apenas transporta esse identificador e não combina itens localmente.
+Antes do primeiro item, o NSAgent cria e persiste uma `session_id` estável de carrinho. Todos os itens do mesmo carrinho reutilizam essa sessão. O Adapter exige e apenas transporta esse identificador; ele não gera sessões nem combina itens localmente.
 
 ## Imagens e opções de pagamento
 

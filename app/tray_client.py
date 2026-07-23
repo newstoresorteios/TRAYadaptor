@@ -161,12 +161,17 @@ def _safe_error_message(value: Any) -> str | None:
                 "authorization",
                 "password",
                 "secret",
-                "session_id",
                 "consumer_key",
                 "consumer_secret",
             )
         )
     ):
+        return None
+    if "session_id" in lowered:
+        if "missing" in lowered or "required" in lowered:
+            return "missing field: session_id"
+        if "invalid" in lowered:
+            return "invalid field: session_id"
         return None
     return text
 

@@ -102,6 +102,7 @@ def _decimal_string(value: Any) -> str:
 
 def _tray_cart_form(payload: dict[str, Any]) -> dict[str, str]:
     product_id = _numeric_identifier(payload["product_id"])
+    session_id = _session_identifier(payload["session_id"])
     quantity = payload["quantity"]
     if not _quantity_is_valid(quantity):
         raise ValueError("quantity must be an integer greater than zero")
@@ -109,16 +110,14 @@ def _tray_cart_form(payload: dict[str, Any]) -> dict[str, str]:
         raise ValueError("price must be a finite non-negative decimal")
 
     cart = {
+        '["Cart"]["session_id"]': session_id,
         '["Cart"]["product_id"]': product_id,
         '["Cart"]["quantity"]': str(quantity),
         '["Cart"]["price"]': _decimal_string(payload["price"]),
     }
-    variant_id = _optional_identifier(payload.get("variant_id"), numeric=True)
+    variant_id = _optional_variant_identifier(payload.get("variant_id"))
     if variant_id is not None:
         cart['["Cart"]["variant_id"]'] = variant_id
-    session_id = _optional_identifier(payload.get("session_id"))
-    if session_id is not None:
-        cart['["Cart"]["session_id"]'] = session_id
     return cart
 
 
@@ -129,13 +128,20 @@ def _numeric_identifier(value: Any) -> str:
     return text
 
 
-def _optional_identifier(value: Any, *, numeric: bool = False) -> str | None:
-    if value is None:
+def _optional_variant_identifier(value: Any) -> str | None:
+    if value is None or str(value).strip() == "0":
         return None
     text = str(value).strip()
     if not text or text.lower() in {"none", "null"}:
-        raise ValueError("optional identifier is invalid")
-    return _numeric_identifier(text) if numeric else text
+        raise ValueError("variant identifier is invalid")
+    return _numeric_identifier(text)
+
+
+def _session_identifier(value: Any) -> str:
+    text = str(value).strip()
+    if not text or len(text) > 32 or text.lower() in {"none", "null"}:
+        raise ValueError("session identifier is invalid")
+    return text
 
 
 def _quantity_is_valid(value: Any) -> bool:
