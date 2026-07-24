@@ -88,7 +88,7 @@ def require_internal_token(request: Request) -> None:
 @app.exception_handler(TrayConnectionError)
 @app.exception_handler(TrayAPIError)
 @app.exception_handler(TrayValidationError)
-async def tray_error_handler(_: Request, exc: Exception) -> JSONResponse:
+async def tray_error_handler(request: Request, exc: Exception) -> JSONResponse:
     if isinstance(exc, TrayConfigurationError): code, status = "tray_configuration_error", 503
     elif isinstance(exc, TrayAuthenticationError): code, status = "tray_authentication_failed", 503
     elif isinstance(exc, TrayConnectionError): code, status = "tray_connection_failed", 503
@@ -105,6 +105,11 @@ async def tray_error_handler(_: Request, exc: Exception) -> JSONResponse:
             "tray_error_fields": diagnostics.get("error_fields", []),
             "tray_error_message": diagnostics.get("error_message"),
         })
+        if request.url.path == "/internal/carts":
+            content.update({
+                "tray_error_name": diagnostics.get("error_name"),
+                "tray_error_causes": diagnostics.get("error_causes", []),
+            })
     return JSONResponse(status_code=status, content=content)
 
 

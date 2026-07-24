@@ -1,7 +1,6 @@
 import json
 import logging
 from decimal import Decimal
-from urllib.parse import parse_qsl
 
 import httpx
 import pytest
@@ -34,10 +33,6 @@ def client(handler):
     return TrayClient(auth, auth.http_client)
 
 
-def form_body(request):
-    return dict(parse_qsl(request.content.decode("utf-8"), keep_blank_values=True))
-
-
 def configure(monkeypatch):
     for key, value in {
         "TRAY_API_BASE": "https://tray.test/web_api", "TRAY_CODE": "code",
@@ -55,13 +50,17 @@ def test_cart_logger_uses_uvicorn_info_channel():
 
 
 @pytest.mark.asyncio
-async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
+async def test_cart_create_json_transport_matrix_and_201_normalization(caplog):
     caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     requests = []
 
     async def handler(request):
         if request.url.path.endswith("/auth"):
             return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        if request.url.path.endswith("/products/variants/900"):
+            return response(request, {
+                "Variant": {"id": "900", "product_id": "123", "price": "6399.99"}
+            })
         requests.append(request)
         return response(request, {"id": "77", "session_id": SESSION_32, "cart_url": "https://store.test/cart", "message": "Created", "code": 201}, 201)
 
@@ -71,40 +70,36 @@ async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
     await resource.create({"product_id": "456", "variant_id": "0", "quantity": 1, "price": Decimal("100.00"), "session_id": SESSION_32})
 
     assert all(request.method == "POST" for request in requests)
-    assert all(request.url.path == "/web_api/carts/" for request in requests)
+    assert all(request.url.path == "/web_api/carts" for request in requests)
     assert all(set(request.url.params.keys()) == {"access_token"} for request in requests)
     assert all(
-        request.headers["content-type"] == "application/x-www-form-urlencoded"
+        request.headers["content-type"] == "application/json"
         for request in requests
     )
-    assert all(not request.content.startswith(b"{") for request in requests)
-    assert requests[0].content == (
-        b"%5B%22Cart%22%5D%5B%22session_id%22%5D=ssssssssssssssssssssssssssssssss"
-        b"&%5B%22Cart%22%5D%5B%22product_id%22%5D=123"
-        b"&%5B%22Cart%22%5D%5B%22variant_id%22%5D="
-        b"&%5B%22Cart%22%5D%5B%22quantity%22%5D=1"
-        b"&%5B%22Cart%22%5D%5B%22price%22%5D=6399.99"
-    )
-    assert form_body(requests[0]) == {
-        '["Cart"]["session_id"]': SESSION_32,
-        '["Cart"]["product_id"]': "123",
-        '["Cart"]["variant_id"]': "",
-        '["Cart"]["quantity"]': "1",
-        '["Cart"]["price"]': "6399.99",
+    assert json.loads(requests[0].content) == {
+        "Cart": {
+            "session_id": SESSION_32,
+            "product_id": 123,
+            "quantity": 1,
+            "price": 6399.99,
+        }
     }
-    assert form_body(requests[1]) == {
-        '["Cart"]["session_id"]': SESSION_32,
-        '["Cart"]["product_id"]': "123",
-        '["Cart"]["variant_id"]': "900",
-        '["Cart"]["quantity"]': "1",
-        '["Cart"]["price"]': "6399.99",
+    assert json.loads(requests[1].content) == {
+        "Cart": {
+            "session_id": SESSION_32,
+            "product_id": 123,
+            "variant_id": 900,
+            "quantity": 1,
+            "price": 6399.99,
+        }
     }
-    assert form_body(requests[2]) == {
-        '["Cart"]["session_id"]': SESSION_32,
-        '["Cart"]["product_id"]': "456",
-        '["Cart"]["variant_id"]': "",
-        '["Cart"]["quantity"]': "1",
-        '["Cart"]["price"]': "100.00",
+    assert json.loads(requests[2].content) == {
+        "Cart": {
+            "session_id": SESSION_32,
+            "product_id": 456,
+            "quantity": 1,
+            "price": 100.0,
+        }
     }
     assert first == {"success": True, "cart": {"cart_id": "77", "session_id": SESSION_32, "cart_url": "https://store.test/cart", "message": "Created", "code": 201}}
     assert "[tray.cart.request]" in caplog.text
@@ -114,7 +109,7 @@ async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
 
 
 @pytest.mark.asyncio
-async def test_product_803_simple_cart_sends_empty_variant_and_safe_request_log(caplog):
+async def test_product_803_simple_cart_omits_variant_and_logs_json_types(caplog):
     caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     cart_requests = []
 
@@ -142,18 +137,21 @@ async def test_product_803_simple_cart_sends_empty_variant_and_safe_request_log(
         "session_id": SESSION_26,
     })
 
-    assert form_body(cart_requests[0]) == {
-        '["Cart"]["session_id"]': SESSION_26,
-        '["Cart"]["product_id"]': "803",
-        '["Cart"]["variant_id"]': "",
-        '["Cart"]["quantity"]': "1",
-        '["Cart"]["price"]': "4699.99",
+    assert json.loads(cart_requests[0].content) == {
+        "Cart": {
+            "session_id": SESSION_26,
+            "product_id": 803,
+            "quantity": 1,
+            "price": 4699.99,
+        }
     }
     assert result["cart"]["cart_id"] == "8031"
     assert "product_id=803" in caplog.text
-    assert "variant_mode=empty" in caplog.text
-    assert "quantity=1 quantity_valid=true" in caplog.text
-    assert "price_present=true price_valid=true price=4699.99" in caplog.text
+    assert "transport=json wrapper=Cart" in caplog.text
+    assert "product_id=803 product_id_type=int" in caplog.text
+    assert "variant_present=false variant_id_type=none" in caplog.text
+    assert "quantity=1 quantity_type=int" in caplog.text
+    assert "price_present=true price_type=float" in caplog.text
     assert "session_length=26" in caplog.text
     assert "session_hash=" in caplog.text
     assert SESSION_26 not in caplog.text
@@ -185,35 +183,75 @@ async def test_cart_accepts_documented_session_lengths(session_id):
         "session_id": session_id,
     })
 
-    assert form_body(cart_requests[0])['["Cart"]["session_id"]'] == session_id
-    assert form_body(cart_requests[0])['["Cart"]["variant_id"]'] == ""
+    cart = json.loads(cart_requests[0].content)["Cart"]
+    assert cart["session_id"] == session_id
+    assert "variant_id" not in cart
 
 
 @pytest.mark.asyncio
-async def test_json_transport_is_distinct_and_remains_available_to_other_resources():
-    requests = []
+async def test_cart_resource_passes_json_and_never_passes_form_data():
+    class RecordingClient:
+        def __init__(self):
+            self.calls = []
+
+        async def request(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return {"message": "Created", "code": 201}
+
+    recording_client = RecordingClient()
+    await CartResource(recording_client).create({
+        "product_id": "803",
+        "quantity": 1,
+        "price": Decimal("4699.99"),
+        "session_id": "session123",
+    })
+
+    args, kwargs = recording_client.calls[0]
+    assert args == ("POST", "/carts")
+    assert kwargs["json"] == {
+        "Cart": {
+            "session_id": "session123",
+            "product_id": 803,
+            "quantity": 1,
+            "price": 4699.99,
+        }
+    }
+    assert "data" not in kwargs
+    assert kwargs["follow_redirects"] is False
+    assert kwargs["reject_redirects"] is True
+
+
+@pytest.mark.asyncio
+async def test_cart_variant_must_belong_to_requested_product():
+    post_calls = 0
 
     async def handler(request):
+        nonlocal post_calls
         if request.url.path.endswith("/auth"):
-            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
-        requests.append(request)
-        return response(request, {"message": "Created"}, 200)
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        if request.method == "GET":
+            return response(request, {
+                "Variant": {"id": "9001", "product_id": "999"}
+            })
+        post_calls += 1
+        return response(request, {"code": 201}, 201)
 
-    payload = {"Cart": {"product_id": "123", "quantity": 1, "price": "50.00"}}
-    await client(handler).request(
-        "POST",
-        "/carts/",
-        json=payload,
-        retry_on_auth_failure=False,
-    )
+    with pytest.raises(
+        TrayValidationError, match="cart_variant_product_mismatch"
+    ):
+        await CartResource(client(handler)).create({
+            "product_id": "803",
+            "variant_id": "9001",
+            "quantity": 1,
+            "price": Decimal("4699.99"),
+            "session_id": "session123",
+        })
 
-    assert requests[0].headers["content-type"] == "application/json"
-    assert json.loads(requests[0].content) == payload
-    assert form_body(requests[0]) != {
-        '["Cart"]["product_id"]': "123",
-        '["Cart"]["quantity"]': "1",
-        '["Cart"]["price"]': "50.00",
-    }
+    assert post_calls == 0
 
 
 @pytest.mark.asyncio
@@ -325,7 +363,7 @@ async def test_successive_cart_posts_reuse_the_same_required_session_id():
     async def handler(request):
         if request.url.path.endswith("/auth"):
             return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
-        payloads.append(form_body(request))
+        payloads.append(json.loads(request.content))
         return response(
             request,
             {"id": str(len(payloads)), "session_id": SESSION_32, "code": 201},
@@ -348,18 +386,20 @@ async def test_successive_cart_posts_reuse_the_same_required_session_id():
 
     assert payloads == [
         {
-            '["Cart"]["session_id"]': SESSION_32,
-            '["Cart"]["product_id"]': "101",
-            '["Cart"]["variant_id"]': "",
-            '["Cart"]["quantity"]': "1",
-            '["Cart"]["price"]': "10.00",
+            "Cart": {
+                "session_id": SESSION_32,
+                "product_id": 101,
+                "quantity": 1,
+                "price": 10.0,
+            }
         },
         {
-            '["Cart"]["session_id"]': SESSION_32,
-            '["Cart"]["product_id"]': "202",
-            '["Cart"]["variant_id"]': "",
-            '["Cart"]["quantity"]': "2",
-            '["Cart"]["price"]': "20.00",
+            "Cart": {
+                "session_id": SESSION_32,
+                "product_id": 202,
+                "quantity": 2,
+                "price": 20.0,
+            }
         },
     ]
 
@@ -472,7 +512,7 @@ async def test_cart_401_refresh_reconciliation_prevents_duplicate(caplog):
         if request.method == "POST":
             cart_posts += 1
             return response(request, {"code": 401, "message": "Unauthorized"}, 401)
-        assert request.url.path == f"/web_api/carts/{SESSION_32}/complete"
+        assert request.url.path == f"/web_api/carts/{SESSION_32}"
         assert request.url.params["access_token"] == "new-token"
         return response(request, {
             "Cart": {
@@ -517,6 +557,10 @@ async def test_cart_401_retries_once_only_when_reconciliation_has_no_item(caplog
                 "access_token": token,
                 "refresh_token": "refresh",
                 "store_id": "687890",
+            })
+        if request.url.path.endswith("/products/variants/900"):
+            return response(request, {
+                "Variant": {"id": "900", "product_id": "123", "price": "50.00"}
             })
         if request.method == "GET":
             return response(request, {"Cart": {"session_id": SESSION_32, "Products": []}})
@@ -608,15 +652,21 @@ def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, capl
         "error": "tray_api_error",
         "status_code": 400,
         "tray_error_code": 400,
-        "tray_error_type": "Bad Request",
+        "tray_error_name": "Bad Request",
+        "tray_error_type": None,
         "tray_error_field": None,
         "tray_error_fields": ["variant_id"],
+        "tray_error_causes": [{"field": "variant_id", "message": "invalid"}],
         "tray_error_message": "missing field: session_id",
     }
     assert cart_calls == 1
     assert "stage=upstream_http" in caplog.text
     assert "upstream_status=400" in caplog.text
     assert "response_is_json=true" in caplog.text
+    assert "content_type=application/json" in caplog.text
+    assert "final_url_path=/web_api/carts" in caplog.text
+    assert "redirect_count=0" in caplog.text
+    assert "error_name=Bad Request" in caplog.text
     assert "error_fields=['variant_id']" in caplog.text
     assert "error_message=missing field: session_id" in caplog.text
     assert "SECRET" not in caplog.text
@@ -663,13 +713,98 @@ def test_cart_upstream_non_json_400_preserves_safe_empty_diagnostics(
         "error": "tray_api_error",
         "status_code": 400,
         "tray_error_code": None,
+        "tray_error_name": None,
         "tray_error_type": None,
         "tray_error_field": None,
         "tray_error_fields": [],
+        "tray_error_causes": [],
         "tray_error_message": None,
     }
     assert "response_is_json=false" in caplog.text
     assert "upstream non-json diagnostic" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("causes", "expected_causes", "expected_fields"),
+    [
+        ([], [], []),
+        ({}, [], []),
+        (["quantity is invalid"], ["quantity is invalid"], []),
+        (
+            {"price": ["price is invalid"]},
+            [{"field": "price", "message": "price is invalid"}],
+            ["price"],
+        ),
+        (
+            {"field": "quantity", "message": "quantity is invalid"},
+            [{"field": "quantity", "message": "quantity is invalid"}],
+            ["quantity"],
+        ),
+    ],
+)
+async def test_cart_error_causes_accept_documented_container_shapes(
+    causes, expected_causes, expected_fields
+):
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        return response(request, {
+            "code": 400,
+            "name": "Bad Request",
+            "causes": causes,
+        }, 400)
+
+    with pytest.raises(TrayAPIError) as error:
+        await CartResource(client(handler)).create({
+            "product_id": "803",
+            "quantity": 1,
+            "price": Decimal("4699.99"),
+            "session_id": SESSION_32,
+        })
+
+    assert error.value.diagnostics["error_causes"] == expected_causes
+    assert error.value.diagnostics.get("error_fields", []) == expected_fields
+
+
+@pytest.mark.asyncio
+async def test_cart_post_rejects_redirect_without_following_or_resending(caplog):
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
+    cart_calls = 0
+
+    async def handler(request):
+        nonlocal cart_calls
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        cart_calls += 1
+        return httpx.Response(
+            307,
+            headers={"location": "/web_api/carts/"},
+            request=request,
+        )
+
+    with pytest.raises(TrayAPIError) as error:
+        await CartResource(client(handler)).create({
+            "product_id": "803",
+            "quantity": 1,
+            "price": Decimal("4699.99"),
+            "session_id": SESSION_32,
+        })
+
+    assert error.value.status_code == 307
+    assert error.value.diagnostics["final_url_path"] == "/web_api/carts"
+    assert error.value.diagnostics["redirect_count"] == 0
+    assert cart_calls == 1
+    assert "status_code=307" in caplog.text
+    assert "redirect_count=0" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -725,7 +860,7 @@ async def test_cart_upstream_session_value_is_redacted_from_error_message(caplog
 
 
 @pytest.mark.asyncio
-async def test_cart_post_timeout_is_not_retried(caplog):
+async def test_cart_post_timeout_reconciles_then_retries_only_once(caplog):
     caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     cart_calls = 0
 
@@ -733,6 +868,8 @@ async def test_cart_post_timeout_is_not_retried(caplog):
         nonlocal cart_calls
         if request.url.path.endswith("/auth"):
             return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        if request.method == "GET":
+            return response(request, [])
         cart_calls += 1
         raise httpx.ReadTimeout("timed out", request=request)
 
@@ -744,9 +881,51 @@ async def test_cart_post_timeout_is_not_retried(caplog):
             "session_id": SESSION_32,
         })
 
-    assert cart_calls == 1
+    assert cart_calls == 2
+    assert "reason=ambiguous_transport" in caplog.text
+    assert "action=retry_once" in caplog.text
     assert "stage=upstream_http" in caplog.text
     assert "error_type=TrayConnectionError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_ambiguous_non_json_success_reconciles_without_duplicate():
+    cart_posts = 0
+    reconciliation_gets = 0
+
+    async def handler(request):
+        nonlocal cart_posts, reconciliation_gets
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        if request.method == "GET":
+            reconciliation_gets += 1
+            return response(request, [{
+                "Cart": {
+                    "session_id": SESSION_32,
+                    "product_id": "803",
+                    "variant_id": "0",
+                    "quantity": "1",
+                    "price": "4699.99",
+                }
+            }])
+        cart_posts += 1
+        return httpx.Response(200, text="ambiguous upstream body", request=request)
+
+    result = await CartResource(client(handler)).create({
+        "product_id": "803",
+        "quantity": 1,
+        "price": Decimal("4699.99"),
+        "session_id": SESSION_32,
+    })
+
+    assert result["success"] is True
+    assert result["cart"]["items"][0]["product_id"] == "803"
+    assert cart_posts == 1
+    assert reconciliation_gets == 1
 
 
 @pytest.mark.asyncio

@@ -66,7 +66,7 @@ As rotas internas são majoritariamente de leitura. A exceção atual é `POST /
 | Products | `/products`, `/products/{id}` | GET, POST, PUT, DELETE |
 | Product variants | `/products/variants/`, `/products/variants/{id}` | GET |
 | Categories | `/categories/`, `/categories/{id}`, `/categories/tree/{id}` | GET |
-| Carts | `/carts/`, `/carts/{session_id}` | POST, GET |
+| Carts | `/carts`, `/carts/{session_id}` | POST, GET |
 | Complete cart | `/carts/{session_id}/complete` | GET |
 | Payment options | `/payments/options` | GET |
 | Active payment methods | `/payments/methods/1/active` | GET |
@@ -95,7 +95,7 @@ As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/he
 
 ## Carrinhos
 
-`POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O Adapter envia esses campos como formulário no objeto oficial `Cart`, sem calcular preço, disponibilidade ou variante. Em uma resposta 401, ele atualiza o token, consulta o carrinho completo e só repete a escrita uma vez se o mesmo produto/variante ainda não estiver registrado. Outros erros e falhas de transporte não provocam retry do POST.
+`POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O Adapter envia JSON com wrapper `Cart`, IDs e quantidade numéricos e preço decimal, sem calcular preço ou escolher variante. Quando há variante, confirma antes que ela pertence ao produto. Em uma resposta 401, atualiza o token e reconcilia a sessão; em timeout, conexão interrompida ou resposta ambígua, reconcilia antes de qualquer nova tentativa. O POST é repetido no máximo uma vez e somente quando o item ainda não existe.
 
 `GET /internal/carts/{session_id}` consulta o carrinho simples. `GET /internal/carts/{session_id}/complete` preserva itens, preços, quantidades, estoque, disponibilidade, imagens e totais informados pela Tray.
 

@@ -5,6 +5,7 @@ from typing import Any
 
 from ..exceptions import TrayAPIError, TrayConnectionError, TrayError, TrayValidationError
 from ..normalizers.cart import normalize_cart
+from ..normalizers.variant import normalize_variant
 
 logger = logging.getLogger("uvicorn.error.tray.cart")
 logger.setLevel(logging.INFO)
@@ -15,24 +16,8 @@ class CartResource:
         self.client = client
 
     async def create(self, payload: dict[str, Any]):
-        price_present = payload.get("price") is not None
-        price_valid = _price_is_valid(payload.get("price"))
-        logger.info(
-            "[tray.cart.request] product_id=%s variant_mode=%s "
-            "quantity=%s quantity_valid=%s price_present=%s price_valid=%s "
-            "price=%s session_length=%s session_hash=%s",
-            _safe_product_log(payload.get("product_id")),
-            _variant_mode(payload.get("variant_id")),
-            payload.get("quantity") if _quantity_is_valid(payload.get("quantity")) else "invalid",
-            _boolean(_quantity_is_valid(payload.get("quantity"))),
-            _boolean(price_present),
-            _boolean(price_valid),
-            _safe_price_log(payload.get("price")),
-            _session_length(payload.get("session_id")),
-            _session_hash(payload.get("session_id")),
-        )
         try:
-            cart_form = _tray_cart_form(payload)
+            cart_payload = _tray_cart_payload(payload)
         except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             logger.info(
                 "[tray.cart.failure] stage=payload_translation "
@@ -41,15 +26,42 @@ class CartResource:
             )
             raise TrayValidationError("cart_payload_invalid") from exc
 
+        await self._validate_variant_product(cart_payload["Cart"])
+        _log_cart_request(cart_payload["Cart"])
+
         try:
-            response = await self._post_cart(cart_form, attempt="initial")
+            response = await self._post_cart(cart_payload, attempt="initial")
         except TrayAPIError as exc:
-            if not _is_auth_failure(exc):
-                raise
-            return await self._recover_after_auth_failure(payload, cart_form)
+            if _is_auth_failure(exc):
+                return await self._recover_after_auth_failure(payload, cart_payload)
+            if exc.diagnostics.get("invalid_response"):
+                return await self._recover_after_ambiguous_failure(
+                    payload, cart_payload
+                )
+            raise
+        except TrayConnectionError:
+            return await self._recover_after_ambiguous_failure(payload, cart_payload)
         return _normalize_create_response(response, recovered=False)
 
-    async def _post_cart(self, cart_form: dict[str, str], *, attempt: str) -> Any:
+    async def _validate_variant_product(self, cart: dict[str, Any]) -> None:
+        variant_id = cart.get("variant_id")
+        if variant_id is None:
+            return
+        response = await self.client.request(
+            "GET", f"/products/variants/{variant_id}"
+        )
+        variant = normalize_variant(response)
+        variant_product_id = variant.get("product_id")
+        if variant_product_id is None:
+            raise TrayValidationError("cart_variant_product_unverified")
+        try:
+            normalized_variant_product_id = _numeric_identifier(variant_product_id)
+        except (TypeError, ValueError) as exc:
+            raise TrayValidationError("cart_variant_product_unverified") from exc
+        if normalized_variant_product_id != cart["product_id"]:
+            raise TrayValidationError("cart_variant_product_mismatch")
+
+    async def _post_cart(self, cart_payload: dict[str, Any], *, attempt: str) -> Any:
         request_sent = False
 
         def observe_request() -> None:
@@ -60,9 +72,11 @@ class CartResource:
         try:
             return await self.client.request(
                 "POST",
-                "/carts/",
-                data=cart_form,
+                "/carts",
+                json=cart_payload,
                 retry_on_auth_failure=False,
+                follow_redirects=False,
+                reject_redirects=True,
                 request_observer=observe_request,
                 response_observer=lambda diagnostics: _log_upstream_response(
                     diagnostics, attempt
@@ -92,7 +106,7 @@ class CartResource:
             raise
 
     async def _recover_after_auth_failure(
-        self, payload: dict[str, Any], cart_form: dict[str, str]
+        self, payload: dict[str, Any], cart_payload: dict[str, Any]
     ) -> dict[str, Any]:
         logger.info("[tray.cart.auth] status=401 action=refresh_started")
         try:
@@ -105,16 +119,37 @@ class CartResource:
             )
             raise
         logger.info("[tray.cart.auth] status=401 action=refresh_succeeded")
+        return await self._reconcile_then_retry(
+            payload, cart_payload, reason="auth_401"
+        )
 
+    async def _recover_after_ambiguous_failure(
+        self, payload: dict[str, Any], cart_payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        logger.info(
+            "[tray.cart.reconciliation] status=started reason=ambiguous_transport"
+        )
+        return await self._reconcile_then_retry(
+            payload, cart_payload, reason="ambiguous_transport"
+        )
+
+    async def _reconcile_then_retry(
+        self,
+        payload: dict[str, Any],
+        cart_payload: dict[str, Any],
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
         session_id = _session_identifier(payload["session_id"])
-        logger.info("[tray.cart.reconciliation] status=started")
+        if reason != "ambiguous_transport":
+            logger.info("[tray.cart.reconciliation] status=started reason=%s", reason)
         try:
             response = await self.client.request(
                 "GET",
-                f"/carts/{session_id}/complete",
+                f"/carts/{session_id}",
                 retry_on_auth_failure=False,
             )
-            cart = normalize_cart(response)
+            cart = _normalize_reconciliation_cart(response)
         except TrayAPIError as exc:
             if exc.status_code != 404:
                 logger.info(
@@ -146,7 +181,7 @@ class CartResource:
         logger.info(
             "[tray.cart.reconciliation] status=product_not_found action=retry_once"
         )
-        response = await self._post_cart(cart_form, attempt="retry")
+        response = await self._post_cart(cart_payload, attempt="retry")
         return _normalize_create_response(response, recovered=True)
 
     async def get(self, session_id: str):
@@ -176,11 +211,7 @@ class CartResource:
             raise
 
 
-def _decimal_string(value: Any) -> str:
-    return format(value if isinstance(value, Decimal) else Decimal(str(value)), "f")
-
-
-def _tray_cart_form(payload: dict[str, Any]) -> dict[str, str]:
+def _tray_cart_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     product_id = _numeric_identifier(payload["product_id"])
     session_id = _session_identifier(payload["session_id"])
     quantity = payload["quantity"]
@@ -190,25 +221,31 @@ def _tray_cart_form(payload: dict[str, Any]) -> dict[str, str]:
         raise ValueError("price must be a finite non-negative decimal")
 
     cart = {
-        '["Cart"]["session_id"]': session_id,
-        '["Cart"]["product_id"]': product_id,
-        '["Cart"]["variant_id"]': _tray_variant_identifier(payload.get("variant_id")),
-        '["Cart"]["quantity"]': str(quantity),
-        '["Cart"]["price"]': _decimal_string(payload["price"]),
+        "session_id": session_id,
+        "product_id": product_id,
+        "quantity": quantity,
+        "price": float(
+            payload["price"]
+            if isinstance(payload["price"], Decimal)
+            else Decimal(str(payload["price"]))
+        ),
     }
-    return cart
+    variant_id = _optional_variant_identifier(payload.get("variant_id"))
+    if variant_id is not None:
+        cart["variant_id"] = variant_id
+    return {"Cart": cart}
 
 
-def _numeric_identifier(value: Any) -> str:
+def _numeric_identifier(value: Any) -> int:
     text = str(value).strip()
     if not text.isascii() or not text.isdecimal() or int(text) < 1:
         raise ValueError("identifier must be a positive integer")
-    return text
+    return int(text)
 
 
-def _tray_variant_identifier(value: Any) -> str:
+def _optional_variant_identifier(value: Any) -> int | None:
     if value is None or str(value).strip() == "0":
-        return ""
+        return None
     text = str(value).strip()
     if not text or text.lower() in {"none", "null"}:
         raise ValueError("variant identifier is invalid")
@@ -238,27 +275,6 @@ def _boolean(value: bool) -> str:
     return str(value).lower()
 
 
-def _variant_mode(value: Any) -> str:
-    if value is None or str(value).strip() == "0":
-        return "empty"
-    try:
-        _numeric_identifier(value)
-    except (TypeError, ValueError):
-        return "invalid"
-    return "numeric"
-
-
-def _safe_product_log(value: Any) -> str:
-    try:
-        return _numeric_identifier(value)
-    except (TypeError, ValueError):
-        return "invalid"
-
-
-def _safe_price_log(value: Any) -> str:
-    return _decimal_string(value) if _price_is_valid(value) else "invalid"
-
-
 def _session_length(value: Any) -> int:
     return len(str(value)) if value is not None else 0
 
@@ -267,6 +283,26 @@ def _session_hash(value: Any) -> str:
     if value is None:
         return "none"
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:10]
+
+
+def _log_cart_request(cart: dict[str, Any]) -> None:
+    logger.info(
+        "[tray.cart.request] transport=json wrapper=Cart session_present=%s "
+        "session_length=%s session_hash=%s product_id=%s product_id_type=%s "
+        "variant_present=%s variant_id_type=%s quantity=%s quantity_type=%s "
+        "price_present=%s price_type=%s",
+        _boolean(bool(cart.get("session_id"))),
+        _session_length(cart.get("session_id")),
+        _session_hash(cart.get("session_id")),
+        cart["product_id"],
+        type(cart["product_id"]).__name__,
+        _boolean("variant_id" in cart),
+        type(cart["variant_id"]).__name__ if "variant_id" in cart else "none",
+        cart["quantity"],
+        type(cart["quantity"]).__name__,
+        _boolean("price" in cart),
+        type(cart["price"]).__name__ if "price" in cart else "none",
+    )
 
 
 def _is_auth_failure(exc: TrayAPIError) -> bool:
@@ -297,6 +333,20 @@ def _cart_contains_product(cart: dict[str, Any], payload: dict[str, Any]) -> boo
     return False
 
 
+def _normalize_reconciliation_cart(response: Any) -> dict[str, Any]:
+    if not isinstance(response, list):
+        return normalize_cart(response)
+    items: list[dict[str, Any]] = []
+    for value in response:
+        normalized = normalize_cart(value)
+        if "product_id" in normalized:
+            items.append(normalized)
+        raw_items = normalized.get("items")
+        if isinstance(raw_items, list):
+            items.extend(item for item in raw_items if isinstance(item, dict))
+    return {"items": items}
+
+
 def _normalize_create_response(response: Any, *, recovered: bool) -> dict[str, Any]:
     try:
         cart_response = normalize_cart(response)
@@ -325,17 +375,23 @@ def _log_request_sent(attempt: str) -> None:
 def _log_upstream_response(diagnostics: dict[str, Any], attempt: str) -> None:
     logger.info(
         "[tray.cart.upstream] request_sent=true response_received=%s "
-        "status_code=%s response_is_json=%s response_keys=%s "
-        "error_code=%s error_type=%s error_field=%s error_fields=%s "
-        "error_message=%s attempt=%s",
+        "status_code=%s content_type=%s response_is_json=%s response_keys=%s "
+        "final_url_path=%s redirect_count=%s "
+        "error_code=%s error_name=%s error_type=%s error_field=%s error_fields=%s "
+        "error_causes=%s error_message=%s attempt=%s",
         _boolean(bool(diagnostics.get("response_received"))),
         diagnostics.get("status_code", "none"),
+        diagnostics.get("content_type", "none"),
         _boolean(bool(diagnostics.get("response_is_json"))),
         diagnostics.get("response_keys", []),
+        diagnostics.get("final_url_path", "none"),
+        diagnostics.get("redirect_count", 0),
         diagnostics.get("error_code", "none"),
+        diagnostics.get("error_name", "none"),
         diagnostics.get("error_type", "none"),
         diagnostics.get("error_field", "none"),
         diagnostics.get("error_fields", []),
+        diagnostics.get("error_causes", []),
         diagnostics.get("error_message", "none"),
         attempt,
     )
