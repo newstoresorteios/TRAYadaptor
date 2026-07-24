@@ -104,6 +104,8 @@ def _safe_response_diagnostics(response: httpx.Response) -> dict[str, Any]:
     if field_names:
         diagnostics["error_fields"] = field_names
     error_message = _safe_error_message(payload.get("message"))
+    if error_message is None:
+        error_message = _safe_nested_error_message(payload)
     if error_message is not None:
         diagnostics["error_message"] = error_message
     return diagnostics
@@ -136,8 +138,16 @@ def _safe_scalar(value: Any) -> str | int | float | bool | None:
         or any(not (character.isalnum() or character in " _.-:") for character in text)
         or "http://" in lowered
         or "https://" in lowered
-        or "access_token" in lowered
-        or "authorization" in lowered
+        or any(
+            sensitive in lowered
+            for sensitive in (
+                "token",
+                "authorization",
+                "secret",
+                "password",
+                "consumer_key",
+            )
+        )
     ):
         return None
     return value
@@ -157,7 +167,7 @@ def _safe_error_message(value: Any) -> str | None:
         or any(
             sensitive in lowered
             for sensitive in (
-                "access_token",
+                "token",
                 "authorization",
                 "password",
                 "secret",
@@ -174,6 +184,29 @@ def _safe_error_message(value: Any) -> str | None:
             return "invalid field: session_id"
         return None
     return text
+
+
+def _safe_nested_error_message(payload: dict[str, Any]) -> str | None:
+    for container_name in ("causes", "errors"):
+        container = payload.get(container_name)
+        candidates: list[Any]
+        if isinstance(container, dict):
+            candidates = list(container.values())
+        elif isinstance(container, list):
+            candidates = container
+        else:
+            candidates = [container]
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                for key in ("message", "name", "error"):
+                    safe_message = _safe_error_message(candidate.get(key))
+                    if safe_message is not None:
+                        return safe_message
+            else:
+                safe_message = _safe_error_message(candidate)
+                if safe_message is not None:
+                    return safe_message
+    return None
 
 
 def _error_field_names(payload: dict[str, Any]) -> list[str]:

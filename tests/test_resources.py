@@ -72,6 +72,36 @@ def test_product_keeps_lowercase_properties_compatible():
     assert normalize_product({"id": "2", "properties": properties})["properties"] == properties
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://tray.test/product", "https://tray.test/product"),
+        (
+            {
+                "http": "http://tray.test/product",
+                "https": "https://tray.test/product",
+            },
+            "https://tray.test/product",
+        ),
+        ({"https": "https://tray.test/product"}, "https://tray.test/product"),
+        ({"http": "http://tray.test/product"}, "http://tray.test/product"),
+        (None, None),
+    ],
+)
+def test_product_url_normalization(raw, expected):
+    payload = {"id": "1"}
+    if raw is not None:
+        payload["url"] = raw
+    assert normalize_product(payload)["url"] == expected
+
+
+def test_product_url_keeps_existing_product_url_fallback():
+    assert normalize_product({
+        "id": "1",
+        "product_url": {"https": "https://tray.test/fallback"},
+    })["url"] == "https://tray.test/fallback"
+
+
 def test_product_images_prioritize_https_preserve_all_and_allow_empty():
     product = normalize_product({
         "id": "1",

@@ -94,7 +94,16 @@ async def tray_error_handler(_: Request, exc: Exception) -> JSONResponse:
     elif isinstance(exc, TrayValidationError): code, status = str(exc), 400
     else: code, status = "tray_api_error", getattr(exc, "status_code", None) or 503
     content = {"success": False, "error": code}
-    if isinstance(exc, TrayAPIError): content["status_code"] = status
+    if isinstance(exc, TrayAPIError):
+        diagnostics = exc.diagnostics
+        content.update({
+            "status_code": status,
+            "tray_error_code": diagnostics.get("error_code"),
+            "tray_error_type": diagnostics.get("error_type"),
+            "tray_error_field": diagnostics.get("error_field"),
+            "tray_error_fields": diagnostics.get("error_fields", []),
+            "tray_error_message": diagnostics.get("error_message"),
+        })
     return JSONResponse(status_code=status, content=content)
 
 
@@ -239,6 +248,11 @@ async def internal_cart(session_id: str):
 @app.get("/internal/payments/options", dependencies=[Depends(require_internal_token)])
 async def internal_payment_options(cart_session_id: str = Query(..., min_length=1)):
     return await _payment_options_resource().list_for_cart(cart_session_id)
+
+
+@app.get("/internal/payments/methods/active", dependencies=[Depends(require_internal_token)])
+async def internal_active_payment_methods():
+    return await _payment_options_resource().list_active_methods()
 
 
 @app.get("/internal/brands", dependencies=[Depends(require_internal_token)])

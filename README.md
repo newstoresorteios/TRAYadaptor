@@ -1,6 +1,6 @@
 # TrayAdapter
 
-Serviço FastAPI independente para comunicação com a API da Tray. Nesta etapa ele não se conecta ao NSAgent, backend, frontend, pedidos, pagamentos ou outros sistemas.
+Serviço FastAPI independente para comunicação com a API da Tray. Nesta etapa ele não se conecta diretamente ao NSAgent, backend ou frontend e não cria pedidos nem executa cobranças.
 
 ## Configuração
 
@@ -16,7 +16,7 @@ TRAY_STORE_CODE=
 TRAY_ADAPTER_TOKEN=
 ```
 
-`TRAY_API_BASE` já é o endereço completo da API (incluindo `/web_api`); o cliente não acrescenta esse segmento novamente. Tokens ficam em memória, são reutilizados enquanto válidos e recebem uma tentativa única de refresh após HTTP 401.
+`TRAY_API_BASE` já é o endereço completo da API (incluindo `/web_api`); o cliente não acrescenta esse segmento novamente. Tokens ficam em memória e são reutilizados enquanto válidos. Requisições idempotentes podem receber uma tentativa única de refresh após HTTP 401; o POST de carrinho usa reconciliação antes de qualquer nova tentativa.
 
 ## Execução local
 
@@ -47,6 +47,7 @@ python -m compileall app tests
 | Carrinhos | `POST /internal/carts`, `GET /internal/carts/{session_id}` |
 | Carrinho completo | `GET /internal/carts/{session_id}/complete` |
 | Opções de pagamento | `GET /internal/payments/options?cart_session_id=...` |
+| Métodos de pagamento ativos | `GET /internal/payments/methods/active` |
 | Marcas | `GET /internal/brands`, `GET /internal/brands/{id}` |
 | Kits | `GET /internal/kits` |
 | MultiCD | `GET /internal/inventory/distribution-centers`, `GET /internal/inventory/distribution-centers/{id}`, `GET /internal/inventory/products/{id}/distribution-centers` |
@@ -61,13 +62,14 @@ As rotas internas são majoritariamente de leitura. A exceção atual é `POST /
 
 | Resource | Endpoint Tray | Métodos |
 |---|---|---|
-| Auth | `/auth` | POST auth e POST refresh interno |
+| Auth | `/auth` | POST auth e GET refresh |
 | Products | `/products`, `/products/{id}` | GET, POST, PUT, DELETE |
 | Product variants | `/products/variants/`, `/products/variants/{id}` | GET |
 | Categories | `/categories/`, `/categories/{id}`, `/categories/tree/{id}` | GET |
 | Carts | `/carts/`, `/carts/{session_id}` | POST, GET |
 | Complete cart | `/carts/{session_id}/complete` | GET |
 | Payment options | `/payments/options` | GET |
+| Active payment methods | `/payments/methods/1/active` | GET |
 | Brands | `/products/brands`, `/products/brands/{id}` | GET, POST, PUT, DELETE |
 | Kits | `/products/kits` | GET |
 | Inventory | `/products/{id}` | GET e PUT de estoque |
@@ -93,14 +95,16 @@ As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/he
 
 ## Carrinhos
 
-`POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O Adapter envia esses campos no objeto oficial `Cart` sem calcular preço, disponibilidade ou variante. Por segurança contra duplicação, a escrita não é repetida automaticamente após falha de autenticação ou erro upstream.
+`POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O Adapter envia esses campos como formulário no objeto oficial `Cart`, sem calcular preço, disponibilidade ou variante. Em uma resposta 401, ele atualiza o token, consulta o carrinho completo e só repete a escrita uma vez se o mesmo produto/variante ainda não estiver registrado. Outros erros e falhas de transporte não provocam retry do POST.
 
 `GET /internal/carts/{session_id}` consulta o carrinho simples. `GET /internal/carts/{session_id}/complete` preserva itens, preços, quantidades, estoque, disponibilidade, imagens e totais informados pela Tray.
 
 Antes do primeiro item, o NSAgent cria e persiste uma `session_id` estável de carrinho. Todos os itens do mesmo carrinho reutilizam essa sessão. O Adapter exige e apenas transporta esse identificador; ele não gera sessões nem combina itens localmente.
 
+Erros da API Tray mantêm `success`, `error` e `status_code` e acrescentam, quando disponíveis, `tray_error_code`, `tray_error_type`, `tray_error_field`, `tray_error_fields` e `tray_error_message`. Apenas diagnósticos sanitizados são devolvidos; tokens, credenciais, URLs de erro e payloads completos não são expostos.
+
 ## Imagens e opções de pagamento
 
-Produtos e variantes preservam as imagens retornadas pela Tray, priorizando URLs HTTPS. O contrato normalizado contém `images` e `primary_image_url`; nenhuma URL é construída pelo Adapter.
+Produtos e variantes preservam as imagens retornadas pela Tray, priorizando URLs HTTPS. A URL oficial do produto também é normalizada para uma string, priorizando `url.https` e depois `url.http`. O contrato contém `url`, `images` e `primary_image_url`; nenhuma URL é construída pelo Adapter.
 
-`GET /internal/payments/options?cart_session_id=...` consulta opções do carrinho e preserva valores, descontos, acréscimos, impostos e parcelas fornecidos pela Tray. Não há endpoint de criação de pagamento e nenhum dado de cartão é recebido.
+`GET /internal/payments/methods/active` consulta os métodos ativos da loja. `GET /internal/payments/options?cart_session_id=...` consulta opções do carrinho e preserva identificadores, códigos de integração, valores, descontos, acréscimos, impostos e parcelas fornecidos pela Tray. Essas consultas não executam cobrança. Não há endpoint interno de criação de pedido ou pagamento e nenhum dado de cartão é recebido.

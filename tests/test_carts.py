@@ -358,20 +358,130 @@ async def test_cart_post_503_is_not_retried():
 
 
 @pytest.mark.asyncio
-async def test_cart_post_401_is_not_retried_after_write_attempt():
-    cart_calls = 0
+async def test_cart_401_refresh_reconciliation_prevents_duplicate(caplog):
+    caplog.set_level("INFO", logger="tray.cart")
+    cart_posts = 0
+    refreshes = 0
 
     async def handler(request):
-        nonlocal cart_calls
+        nonlocal cart_posts, refreshes
         if request.url.path.endswith("/auth"):
-            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
-        cart_calls += 1
-        return response(request, {"message": "Unauthorized"}, 401)
+            if request.method == "GET":
+                refreshes += 1
+                return response(request, {
+                    "access_token": "new-token",
+                    "refresh_token": "new-refresh",
+                    "store_id": "687890",
+                })
+            return response(request, {
+                "access_token": "old-token",
+                "refresh_token": "old-refresh",
+                "store_id": "687890",
+            })
+        if request.method == "POST":
+            cart_posts += 1
+            return response(request, {"code": 401, "message": "Unauthorized"}, 401)
+        assert request.url.path == f"/web_api/carts/{SESSION_32}/complete"
+        assert request.url.params["access_token"] == "new-token"
+        return response(request, {
+            "Cart": {
+                "session_id": SESSION_32,
+                "Products": [{
+                    "product_id": "123",
+                    "variant_id": "0",
+                    "quantity": "1",
+                    "price": "50.00",
+                }],
+            }
+        })
+
+    result = await CartResource(client(handler)).create({
+        "product_id": "123",
+        "quantity": 1,
+        "price": Decimal("50.00"),
+        "session_id": SESSION_32,
+    })
+
+    assert result["success"] is True
+    assert result["cart"]["items"][0]["product_id"] == "123"
+    assert cart_posts == 1
+    assert refreshes == 1
+    assert "action=refresh_started" in caplog.text
+    assert "status=product_already_present" in caplog.text
+    assert "completed_without_retry" in caplog.text
+    assert "old-token" not in caplog.text
+    assert "new-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_401_retries_once_only_when_reconciliation_has_no_item(caplog):
+    caplog.set_level("INFO", logger="tray.cart")
+    cart_posts = 0
+
+    async def handler(request):
+        nonlocal cart_posts
+        if request.url.path.endswith("/auth"):
+            token = "new-token" if request.method == "GET" else "old-token"
+            return response(request, {
+                "access_token": token,
+                "refresh_token": "refresh",
+                "store_id": "687890",
+            })
+        if request.method == "GET":
+            return response(request, {"Cart": {"session_id": SESSION_32, "Products": []}})
+        cart_posts += 1
+        if cart_posts == 1:
+            return response(request, {"code": 401, "message": "Unauthorized"}, 401)
+        assert request.url.params["access_token"] == "new-token"
+        return response(request, {
+            "id": "77",
+            "session_id": SESSION_32,
+            "message": "Created",
+            "code": 201,
+        }, 201)
+
+    result = await CartResource(client(handler)).create({
+        "product_id": "123",
+        "variant_id": "900",
+        "quantity": 2,
+        "price": Decimal("50.00"),
+        "session_id": SESSION_32,
+    })
+
+    assert result["cart"]["cart_id"] == "77"
+    assert cart_posts == 2
+    assert "status=product_not_found action=retry_once" in caplog.text
+    assert "attempt=retry" in caplog.text
+    assert "recovered=true" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_401_second_post_failure_is_not_retried_again():
+    cart_posts = 0
+
+    async def handler(request):
+        nonlocal cart_posts
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "new" if request.method == "GET" else "old",
+                "refresh_token": "refresh",
+                "store_id": "687890",
+            })
+        if request.method == "GET":
+            return response(request, {"Cart": {"Products": []}})
+        cart_posts += 1
+        return response(request, {"code": 401, "message": "Unauthorized"}, 401)
 
     with pytest.raises(TrayAPIError) as error:
-        await CartResource(client(handler)).create({"product_id": "123", "quantity": 1, "price": Decimal("50.00"), "session_id": SESSION_32})
+        await CartResource(client(handler)).create({
+            "product_id": "123",
+            "quantity": 1,
+            "price": Decimal("50.00"),
+            "session_id": SESSION_32,
+        })
+
     assert error.value.status_code == 401
-    assert cart_calls == 1
+    assert cart_posts == 2
 
 
 def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, caplog):
@@ -402,7 +512,16 @@ def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, capl
     api = TestClient(main.app)
     result = api.post("/internal/carts", json={"product_id": "123", "quantity": 1, "price": "50.00", "session_id": SESSION_32}, headers={"Authorization": "Bearer adapter-token"})
     assert result.status_code == 400
-    assert result.json() == {"success": False, "error": "tray_api_error", "status_code": 400}
+    assert result.json() == {
+        "success": False,
+        "error": "tray_api_error",
+        "status_code": 400,
+        "tray_error_code": 400,
+        "tray_error_type": "Bad Request",
+        "tray_error_field": None,
+        "tray_error_fields": ["variant_id"],
+        "tray_error_message": "missing field: session_id",
+    }
     assert cart_calls == 1
     assert "stage=upstream_http" in caplog.text
     assert "upstream_status=400" in caplog.text

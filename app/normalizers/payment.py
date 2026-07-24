@@ -31,26 +31,95 @@ def _normalize_plots(raw: Any) -> list[dict[str, Any]]:
 def normalize_payment_option(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
-    value = value.get("PaymentOption", value)
+    value = value.get("PaymentOption", value.get("PaymentMethod", value))
     if not isinstance(value, dict):
         return {}
     result: dict[str, Any] = {}
-    for key in ("id", "name", "text"):
+    for key in (
+        "id",
+        "integrator_id",
+        "facilitator_id",
+        "name",
+        "image",
+        "thumbnail",
+        "additional",
+        "integration_code",
+        "text",
+        "text_pag",
+        "finalize_action",
+        "interest_formula",
+    ):
         if key in value:
             result[key] = value[key]
-    if "card" in value:
-        result["card"] = number(value["card"], integer=True)
-    for key in ("discount_value", "increase_value", "total_base", "tax_value"):
+    for key in (
+        "card",
+        "min_splot",
+        "max_splot",
+        "facilitator",
+        "increase",
+        "display_increase",
+        "deactivate",
+        "is_intermediator",
+    ):
+        if key in value:
+            result[key] = number(value[key], integer=True)
+    for key in (
+        "application_value",
+        "discount_value",
+        "increase_value",
+        "total_base",
+        "tax_value",
+    ):
         if key in value:
             result[key] = number(value[key])
+    if "equivalent" in value:
+        result["equivalent"] = value["equivalent"]
     result["plots"] = _normalize_plots(value.get("plots"))
     return result
 
 
 def normalize_payment_options(payload: Any) -> list[dict[str, Any]]:
+    raw = _payment_collection(
+        payload, ("paymentoptions", "payment_options", "PaymentOptions")
+    )
+    return [
+        normalize_payment_option(value)
+        for value in raw
+        if isinstance(value, dict)
+    ]
+
+
+def normalize_payment_methods(payload: Any) -> list[dict[str, Any]]:
+    raw = _payment_collection(
+        payload,
+        (
+            "paymentmethods",
+            "payment_methods",
+            "PaymentMethods",
+            "methods",
+            "Methods",
+            "paymentoptions",
+        ),
+    )
+    return [
+        normalize_payment_option(value)
+        for value in raw
+        if isinstance(value, dict)
+    ]
+
+
+def _payment_collection(payload: Any, keys: tuple[str, ...]) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
     if not isinstance(payload, dict):
         return []
-    raw = payload.get("paymentoptions", payload.get("payment_options", payload.get("PaymentOptions", [])))
+    raw: Any = []
+    for key in keys:
+        if key in payload:
+            raw = payload[key]
+            break
+    if raw == [] and ("id" in payload or "name" in payload):
+        raw = payload
     if isinstance(raw, dict):
         raw = [raw]
-    return [normalize_payment_option(value) for value in raw if isinstance(value, dict)] if isinstance(raw, list) else []
+    return raw if isinstance(raw, list) else []

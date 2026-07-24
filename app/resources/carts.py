@@ -33,41 +33,112 @@ class CartResource:
             raise TrayValidationError("cart_payload_invalid") from exc
 
         try:
-            response = await self.client.request(
+            response = await self._post_cart(cart_form, attempt="initial")
+        except TrayAPIError as exc:
+            if not _is_auth_failure(exc):
+                raise
+            return await self._recover_after_auth_failure(payload, cart_form)
+        return _normalize_create_response(response, recovered=False)
+
+    async def _post_cart(self, cart_form: dict[str, str], *, attempt: str) -> Any:
+        request_sent = False
+
+        def observe_request() -> None:
+            nonlocal request_sent
+            request_sent = True
+            _log_request_sent(attempt)
+
+        try:
+            return await self.client.request(
                 "POST",
                 "/carts/",
                 data=cart_form,
                 retry_on_auth_failure=False,
-                request_observer=_log_request_sent,
-                response_observer=_log_upstream_response,
+                request_observer=observe_request,
+                response_observer=lambda diagnostics: _log_upstream_response(
+                    diagnostics, attempt
+                ),
             )
         except (TrayAPIError, TrayConnectionError) as exc:
             logger.info(
-                "[tray.cart.failure] stage=upstream_http "
+                "[tray.cart.failure] stage=%s attempt=%s "
+                "error_type=%s upstream_status=%s final=%s",
+                "upstream_http" if request_sent else "before_send",
+                attempt,
+                type(exc).__name__,
+                getattr(exc, "status_code", None) or "none",
+                _boolean(attempt == "retry" or not _is_auth_failure(exc))
+                if isinstance(exc, TrayAPIError)
+                else "true",
+            )
+            raise
+        except TrayError as exc:
+            logger.info(
+                "[tray.cart.failure] stage=%s attempt=%s "
+                "error_type=%s upstream_status=none final=true",
+                "upstream_http" if request_sent else "before_send",
+                attempt,
+                type(exc).__name__,
+            )
+            raise
+
+    async def _recover_after_auth_failure(
+        self, payload: dict[str, Any], cart_form: dict[str, str]
+    ) -> dict[str, Any]:
+        logger.info("[tray.cart.auth] status=401 action=refresh_started")
+        try:
+            await self.client.auth.refresh()
+        except TrayError as exc:
+            logger.info(
+                "[tray.cart.failure] stage=refresh error_type=%s upstream_status=%s",
+                type(exc).__name__,
+                getattr(exc, "status_code", None) or "none",
+            )
+            raise
+        logger.info("[tray.cart.auth] status=401 action=refresh_succeeded")
+
+        session_id = _session_identifier(payload["session_id"])
+        logger.info("[tray.cart.reconciliation] status=started")
+        try:
+            response = await self.client.request(
+                "GET",
+                f"/carts/{session_id}/complete",
+                retry_on_auth_failure=False,
+            )
+            cart = normalize_cart(response)
+        except TrayAPIError as exc:
+            if exc.status_code != 404:
+                logger.info(
+                    "[tray.cart.failure] stage=reconciliation "
+                    "error_type=%s upstream_status=%s",
+                    type(exc).__name__,
+                    exc.status_code or "none",
+                )
+                raise
+            cart = {}
+            logger.info("[tray.cart.reconciliation] status=cart_not_found")
+        except TrayError as exc:
+            logger.info(
+                "[tray.cart.failure] stage=reconciliation "
                 "error_type=%s upstream_status=%s",
                 type(exc).__name__,
                 getattr(exc, "status_code", None) or "none",
             )
             raise
-        except TrayError as exc:
-            logger.info(
-                "[tray.cart.failure] stage=upstream_http "
-                "error_type=%s upstream_status=none",
-                type(exc).__name__,
-            )
-            raise
 
-        try:
-            cart_response = normalize_cart(response)
-        except Exception as exc:
+        if _cart_contains_product(cart, payload):
             logger.info(
-                "[tray.cart.failure] stage=normalization "
-                "error_type=%s upstream_status=none",
-                type(exc).__name__,
+                "[tray.cart.reconciliation] status=product_already_present "
+                "action=completed_without_retry"
             )
-            raise
-        logger.info("operation=create success=true")
-        return {"success": True, "cart": cart_response}
+            logger.info("operation=create success=true recovered=true retry=false")
+            return {"success": True, "cart": cart}
+
+        logger.info(
+            "[tray.cart.reconciliation] status=product_not_found action=retry_once"
+        )
+        response = await self._post_cart(cart_form, attempt="retry")
+        return _normalize_create_response(response, recovered=True)
 
     async def get(self, session_id: str):
         try:
@@ -160,18 +231,64 @@ def _boolean(value: bool) -> str:
     return str(value).lower()
 
 
-def _log_request_sent() -> None:
+def _is_auth_failure(exc: TrayAPIError) -> bool:
+    return exc.status_code == 401 or str(exc.diagnostics.get("error_code", "")) == "401"
+
+
+def _variant_identity(value: Any) -> str | None:
+    if value is None or str(value).strip() in {"", "0"}:
+        return None
+    return str(value).strip()
+
+
+def _cart_contains_product(cart: dict[str, Any], payload: dict[str, Any]) -> bool:
+    requested_product = str(payload["product_id"]).strip()
+    requested_variant = _variant_identity(payload.get("variant_id"))
+    candidates = cart.get("items", [])
+    if not isinstance(candidates, list):
+        candidates = []
+    if "product_id" in cart:
+        candidates = [cart, *candidates]
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("product_id", "")).strip() != requested_product:
+            continue
+        if _variant_identity(item.get("variant_id")) == requested_variant:
+            return True
+    return False
+
+
+def _normalize_create_response(response: Any, *, recovered: bool) -> dict[str, Any]:
+    try:
+        cart_response = normalize_cart(response)
+    except Exception as exc:
+        logger.info(
+            "[tray.cart.failure] stage=normalization "
+            "error_type=%s upstream_status=none",
+            type(exc).__name__,
+        )
+        raise
+    logger.info(
+        "operation=create success=true recovered=%s",
+        _boolean(recovered),
+    )
+    return {"success": True, "cart": cart_response}
+
+
+def _log_request_sent(attempt: str) -> None:
     logger.info(
         "[tray.cart.upstream] request_sent=true response_received=false "
-        "status_code=none response_is_json=unknown response_keys=[]"
+        "status_code=none response_is_json=unknown response_keys=[] attempt=%s",
+        attempt,
     )
 
 
-def _log_upstream_response(diagnostics: dict[str, Any]) -> None:
+def _log_upstream_response(diagnostics: dict[str, Any], attempt: str) -> None:
     logger.info(
         "[tray.cart.upstream] request_sent=true response_received=%s "
         "status_code=%s response_is_json=%s response_keys=%s "
-        "error_code=%s error_type=%s error_fields=%s error_message=%s",
+        "error_code=%s error_type=%s error_fields=%s error_message=%s attempt=%s",
         _boolean(bool(diagnostics.get("response_received"))),
         diagnostics.get("status_code", "none"),
         _boolean(bool(diagnostics.get("response_is_json"))),
@@ -180,4 +297,5 @@ def _log_upstream_response(diagnostics: dict[str, Any]) -> None:
         diagnostics.get("error_type", "none"),
         diagnostics.get("error_fields", []),
         diagnostics.get("error_message", "none"),
+        attempt,
     )
