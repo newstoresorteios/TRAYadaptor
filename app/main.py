@@ -27,7 +27,8 @@ from .tray_client import TrayClient
 
 app = FastAPI(title="TrayAdapter")
 _tray_client: TrayClient | None = None
-cart_logger = logging.getLogger("tray.cart")
+cart_logger = logging.getLogger("uvicorn.error.tray.cart")
+cart_logger.setLevel(logging.INFO)
 
 
 @app.middleware("http")

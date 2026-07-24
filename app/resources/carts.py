@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -5,7 +6,8 @@ from typing import Any
 from ..exceptions import TrayAPIError, TrayConnectionError, TrayError, TrayValidationError
 from ..normalizers.cart import normalize_cart
 
-logger = logging.getLogger("tray.cart")
+logger = logging.getLogger("uvicorn.error.tray.cart")
+logger.setLevel(logging.INFO)
 
 
 class CartResource:
@@ -13,14 +15,21 @@ class CartResource:
         self.client = client
 
     async def create(self, payload: dict[str, Any]):
+        price_present = payload.get("price") is not None
+        price_valid = _price_is_valid(payload.get("price"))
         logger.info(
-            "[tray.cart.request] has_product_id=%s has_variant_id=%s "
-            "quantity_valid=%s price_valid=%s has_session_id=%s",
-            _boolean(bool(payload.get("product_id"))),
-            _boolean(payload.get("variant_id") is not None),
+            "[tray.cart.request] product_id=%s variant_mode=%s "
+            "quantity=%s quantity_valid=%s price_present=%s price_valid=%s "
+            "price=%s session_length=%s session_hash=%s",
+            _safe_product_log(payload.get("product_id")),
+            _variant_mode(payload.get("variant_id")),
+            payload.get("quantity") if _quantity_is_valid(payload.get("quantity")) else "invalid",
             _boolean(_quantity_is_valid(payload.get("quantity"))),
-            _boolean(_price_is_valid(payload.get("price"))),
-            _boolean(payload.get("session_id") is not None),
+            _boolean(price_present),
+            _boolean(price_valid),
+            _safe_price_log(payload.get("price")),
+            _session_length(payload.get("session_id")),
+            _session_hash(payload.get("session_id")),
         )
         try:
             cart_form = _tray_cart_form(payload)
@@ -183,12 +192,10 @@ def _tray_cart_form(payload: dict[str, Any]) -> dict[str, str]:
     cart = {
         '["Cart"]["session_id"]': session_id,
         '["Cart"]["product_id"]': product_id,
+        '["Cart"]["variant_id"]': _tray_variant_identifier(payload.get("variant_id")),
         '["Cart"]["quantity"]': str(quantity),
         '["Cart"]["price"]': _decimal_string(payload["price"]),
     }
-    variant_id = _optional_variant_identifier(payload.get("variant_id"))
-    if variant_id is not None:
-        cart['["Cart"]["variant_id"]'] = variant_id
     return cart
 
 
@@ -199,9 +206,9 @@ def _numeric_identifier(value: Any) -> str:
     return text
 
 
-def _optional_variant_identifier(value: Any) -> str | None:
+def _tray_variant_identifier(value: Any) -> str:
     if value is None or str(value).strip() == "0":
-        return None
+        return ""
     text = str(value).strip()
     if not text or text.lower() in {"none", "null"}:
         raise ValueError("variant identifier is invalid")
@@ -229,6 +236,37 @@ def _price_is_valid(value: Any) -> bool:
 
 def _boolean(value: bool) -> str:
     return str(value).lower()
+
+
+def _variant_mode(value: Any) -> str:
+    if value is None or str(value).strip() == "0":
+        return "empty"
+    try:
+        _numeric_identifier(value)
+    except (TypeError, ValueError):
+        return "invalid"
+    return "numeric"
+
+
+def _safe_product_log(value: Any) -> str:
+    try:
+        return _numeric_identifier(value)
+    except (TypeError, ValueError):
+        return "invalid"
+
+
+def _safe_price_log(value: Any) -> str:
+    return _decimal_string(value) if _price_is_valid(value) else "invalid"
+
+
+def _session_length(value: Any) -> int:
+    return len(str(value)) if value is not None else 0
+
+
+def _session_hash(value: Any) -> str:
+    if value is None:
+        return "none"
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:10]
 
 
 def _is_auth_failure(exc: TrayAPIError) -> bool:
@@ -288,13 +326,15 @@ def _log_upstream_response(diagnostics: dict[str, Any], attempt: str) -> None:
     logger.info(
         "[tray.cart.upstream] request_sent=true response_received=%s "
         "status_code=%s response_is_json=%s response_keys=%s "
-        "error_code=%s error_type=%s error_fields=%s error_message=%s attempt=%s",
+        "error_code=%s error_type=%s error_field=%s error_fields=%s "
+        "error_message=%s attempt=%s",
         _boolean(bool(diagnostics.get("response_received"))),
         diagnostics.get("status_code", "none"),
         _boolean(bool(diagnostics.get("response_is_json"))),
         diagnostics.get("response_keys", []),
         diagnostics.get("error_code", "none"),
         diagnostics.get("error_type", "none"),
+        diagnostics.get("error_field", "none"),
         diagnostics.get("error_fields", []),
         diagnostics.get("error_message", "none"),
         attempt,

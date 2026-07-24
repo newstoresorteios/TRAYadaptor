@@ -1,4 +1,5 @@
 import json
+import logging
 from decimal import Decimal
 from urllib.parse import parse_qsl
 
@@ -15,6 +16,8 @@ from app.tray_client import TrayClient
 
 
 SESSION_32 = "s" * 32
+SESSION_26 = "s" * 26
+SESSION_18 = "s" * 18
 
 
 def settings():
@@ -44,9 +47,16 @@ def configure(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
+def test_cart_logger_uses_uvicorn_info_channel():
+    cart_logger = logging.getLogger("uvicorn.error.tray.cart")
+
+    assert cart_logger.getEffectiveLevel() == logging.INFO
+    assert cart_logger.name.startswith("uvicorn.error.")
+
+
 @pytest.mark.asyncio
 async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     requests = []
 
     async def handler(request):
@@ -71,25 +81,28 @@ async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
     assert requests[0].content == (
         b"%5B%22Cart%22%5D%5B%22session_id%22%5D=ssssssssssssssssssssssssssssssss"
         b"&%5B%22Cart%22%5D%5B%22product_id%22%5D=123"
+        b"&%5B%22Cart%22%5D%5B%22variant_id%22%5D="
         b"&%5B%22Cart%22%5D%5B%22quantity%22%5D=1"
         b"&%5B%22Cart%22%5D%5B%22price%22%5D=6399.99"
     )
     assert form_body(requests[0]) == {
         '["Cart"]["session_id"]': SESSION_32,
         '["Cart"]["product_id"]': "123",
+        '["Cart"]["variant_id"]': "",
         '["Cart"]["quantity"]': "1",
         '["Cart"]["price"]': "6399.99",
     }
     assert form_body(requests[1]) == {
         '["Cart"]["session_id"]': SESSION_32,
         '["Cart"]["product_id"]': "123",
+        '["Cart"]["variant_id"]': "900",
         '["Cart"]["quantity"]': "1",
         '["Cart"]["price"]': "6399.99",
-        '["Cart"]["variant_id"]': "900",
     }
     assert form_body(requests[2]) == {
         '["Cart"]["session_id"]': SESSION_32,
         '["Cart"]["product_id"]': "456",
+        '["Cart"]["variant_id"]': "",
         '["Cart"]["quantity"]': "1",
         '["Cart"]["price"]': "100.00",
     }
@@ -98,6 +111,82 @@ async def test_cart_create_form_transport_matrix_and_201_normalization(caplog):
     assert "status_code=201" in caplog.text
     assert "response_is_json=true" in caplog.text
     assert "https://store.test/cart" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_product_803_simple_cart_sends_empty_variant_and_safe_request_log(caplog):
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
+    cart_requests = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        cart_requests.append(request)
+        return response(request, {
+            "message": "Created",
+            "id": "8031",
+            "session_id": SESSION_26,
+            "cart_url": "https://store.test/cart",
+            "code": 201,
+        }, 201)
+
+    result = await CartResource(client(handler)).create({
+        "product_id": "803",
+        "variant_id": None,
+        "quantity": 1,
+        "price": Decimal("4699.99"),
+        "session_id": SESSION_26,
+    })
+
+    assert form_body(cart_requests[0]) == {
+        '["Cart"]["session_id"]': SESSION_26,
+        '["Cart"]["product_id"]': "803",
+        '["Cart"]["variant_id"]': "",
+        '["Cart"]["quantity"]': "1",
+        '["Cart"]["price"]': "4699.99",
+    }
+    assert result["cart"]["cart_id"] == "8031"
+    assert "product_id=803" in caplog.text
+    assert "variant_mode=empty" in caplog.text
+    assert "quantity=1 quantity_valid=true" in caplog.text
+    assert "price_present=true price_valid=true price=4699.99" in caplog.text
+    assert "session_length=26" in caplog.text
+    assert "session_hash=" in caplog.text
+    assert SESSION_26 not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_id", [SESSION_18, SESSION_26, SESSION_32])
+async def test_cart_accepts_documented_session_lengths(session_id):
+    cart_requests = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        cart_requests.append(request)
+        return response(request, {
+            "id": "1",
+            "session_id": session_id,
+            "code": 201,
+        }, 201)
+
+    await CartResource(client(handler)).create({
+        "product_id": "803",
+        "quantity": 1,
+        "price": Decimal("4699.99"),
+        "session_id": session_id,
+    })
+
+    assert form_body(cart_requests[0])['["Cart"]["session_id"]'] == session_id
+    assert form_body(cart_requests[0])['["Cart"]["variant_id"]'] == ""
 
 
 @pytest.mark.asyncio
@@ -261,12 +350,14 @@ async def test_successive_cart_posts_reuse_the_same_required_session_id():
         {
             '["Cart"]["session_id"]': SESSION_32,
             '["Cart"]["product_id"]': "101",
+            '["Cart"]["variant_id"]': "",
             '["Cart"]["quantity"]': "1",
             '["Cart"]["price"]': "10.00",
         },
         {
             '["Cart"]["session_id"]': SESSION_32,
             '["Cart"]["product_id"]': "202",
+            '["Cart"]["variant_id"]': "",
             '["Cart"]["quantity"]': "2",
             '["Cart"]["price"]': "20.00",
         },
@@ -290,7 +381,7 @@ class FakeCartResource:
 
 def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch, caplog):
     configure(monkeypatch)
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     resource = FakeCartResource()
     monkeypatch.setattr(main, "_cart_resource", lambda: resource)
     api = TestClient(main.app)
@@ -315,7 +406,7 @@ def test_cart_routes_validate_quantity_price_and_internal_bearer(monkeypatch, ca
     assert api.post("/internal/carts", json={**body, "variant_id": "null"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
     assert api.post("/internal/carts", json={**body, "session_id": "None"}, headers={"Authorization": "Bearer adapter-token"}).status_code == 422
     assert len(resource.calls) == 1
-    assert "variant_id" not in resource.calls[0]
+    assert resource.calls[0].get("variant_id") is None
     assert "stage=internal_validation" in caplog.text
 
 
@@ -359,7 +450,7 @@ async def test_cart_post_503_is_not_retried():
 
 @pytest.mark.asyncio
 async def test_cart_401_refresh_reconciliation_prevents_duplicate(caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     cart_posts = 0
     refreshes = 0
 
@@ -415,7 +506,7 @@ async def test_cart_401_refresh_reconciliation_prevents_duplicate(caplog):
 
 @pytest.mark.asyncio
 async def test_cart_401_retries_once_only_when_reconciliation_has_no_item(caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     cart_posts = 0
 
     async def handler(request):
@@ -486,7 +577,7 @@ async def test_cart_401_second_post_failure_is_not_retried_again():
 
 def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, caplog):
     configure(monkeypatch)
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     cart_calls = 0
 
     async def handler(request):
@@ -533,9 +624,57 @@ def test_cart_upstream_400_is_normalized_with_safe_diagnostics(monkeypatch, capl
     assert "https://tray.test/carts/" not in caplog.text
 
 
+def test_cart_upstream_non_json_400_preserves_safe_empty_diagnostics(
+    monkeypatch, caplog
+):
+    configure(monkeypatch)
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        return httpx.Response(
+            400,
+            text="upstream non-json diagnostic must not be exposed",
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        main, "_cart_resource", lambda: CartResource(client(handler))
+    )
+    result = TestClient(main.app).post(
+        "/internal/carts",
+        json={
+            "product_id": "803",
+            "quantity": 1,
+            "price": "4699.99",
+            "session_id": SESSION_32,
+        },
+        headers={"Authorization": "Bearer adapter-token"},
+    )
+
+    assert result.status_code == 400
+    assert result.json() == {
+        "success": False,
+        "error": "tray_api_error",
+        "status_code": 400,
+        "tray_error_code": None,
+        "tray_error_type": None,
+        "tray_error_field": None,
+        "tray_error_fields": [],
+        "tray_error_message": None,
+    }
+    assert "response_is_json=false" in caplog.text
+    assert "upstream non-json diagnostic" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_cart_upstream_sensitive_error_message_is_not_logged(caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
 
     async def handler(request):
         if request.url.path.endswith("/auth"):
@@ -561,7 +700,7 @@ async def test_cart_upstream_sensitive_error_message_is_not_logged(caplog):
 
 @pytest.mark.asyncio
 async def test_cart_upstream_session_value_is_redacted_from_error_message(caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
 
     async def handler(request):
         if request.url.path.endswith("/auth"):
@@ -587,7 +726,7 @@ async def test_cart_upstream_session_value_is_redacted_from_error_message(caplog
 
 @pytest.mark.asyncio
 async def test_cart_post_timeout_is_not_retried(caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
     cart_calls = 0
 
     async def handler(request):
@@ -612,7 +751,7 @@ async def test_cart_post_timeout_is_not_retried(caplog):
 
 @pytest.mark.asyncio
 async def test_cart_payload_translation_failure_is_identified(caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
 
     with pytest.raises(TrayValidationError, match="cart_payload_invalid"):
         await CartResource(client(lambda request: response(request, {}))).create({
@@ -627,7 +766,7 @@ async def test_cart_payload_translation_failure_is_identified(caplog):
 
 @pytest.mark.asyncio
 async def test_cart_normalization_failure_is_identified(monkeypatch, caplog):
-    caplog.set_level("INFO", logger="tray.cart")
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
 
     async def handler(request):
         if request.url.path.endswith("/auth"):
