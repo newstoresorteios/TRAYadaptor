@@ -224,11 +224,6 @@ def _tray_cart_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "session_id": session_id,
         "product_id": product_id,
         "quantity": quantity,
-        "price": float(
-            payload["price"]
-            if isinstance(payload["price"], Decimal)
-            else Decimal(str(payload["price"]))
-        ),
     }
     variant_id = _optional_variant_identifier(payload.get("variant_id"))
     if variant_id is not None:
@@ -290,7 +285,7 @@ def _log_cart_request(cart: dict[str, Any]) -> None:
         "[tray.cart.request] transport=json wrapper=Cart session_present=%s "
         "session_length=%s session_hash=%s product_id=%s product_id_type=%s "
         "variant_present=%s variant_id_type=%s quantity=%s quantity_type=%s "
-        "price_present=%s price_type=%s",
+        "price_forwarded=false",
         _boolean(bool(cart.get("session_id"))),
         _session_length(cart.get("session_id")),
         _session_hash(cart.get("session_id")),
@@ -300,8 +295,6 @@ def _log_cart_request(cart: dict[str, Any]) -> None:
         type(cart["variant_id"]).__name__ if "variant_id" in cart else "none",
         cart["quantity"],
         type(cart["quantity"]).__name__,
-        _boolean("price" in cart),
-        type(cart["price"]).__name__ if "price" in cart else "none",
     )
 
 

@@ -95,7 +95,7 @@ As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/he
 
 ## Carrinhos
 
-`POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O Adapter envia JSON com wrapper `Cart`, IDs e quantidade numéricos e preço decimal, sem calcular preço ou escolher variante. Quando há variante, confirma antes que ela pertence ao produto. Em uma resposta 401, atualiza o token e reconcilia a sessão; em timeout, conexão interrompida ou resposta ambígua, reconcilia antes de qualquer nova tentativa. O POST é repetido no máximo uma vez e somente quando o item ainda não existe.
+`POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O campo `price` permanece no contrato interno por compatibilidade, mas não é encaminhado à Tray: a loja determina o preço a partir do produto e da variante. O Adapter envia JSON com wrapper `Cart`, IDs e quantidade numéricos, sem calcular preço ou escolher variante. Quando há variante, confirma antes que ela pertence ao produto. Em uma resposta 401, atualiza o token e reconcilia a sessão; em timeout, conexão interrompida ou resposta ambígua, reconcilia antes de qualquer nova tentativa. O POST é repetido no máximo uma vez e somente quando o item ainda não existe.
 
 `GET /internal/carts/{session_id}` consulta o carrinho simples. `GET /internal/carts/{session_id}/complete` preserva itens, preços, quantidades, estoque, disponibilidade, imagens e totais informados pela Tray.
 

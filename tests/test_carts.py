@@ -81,7 +81,6 @@ async def test_cart_create_json_transport_matrix_and_201_normalization(caplog):
             "session_id": SESSION_32,
             "product_id": 123,
             "quantity": 1,
-            "price": 6399.99,
         }
     }
     assert json.loads(requests[1].content) == {
@@ -90,7 +89,6 @@ async def test_cart_create_json_transport_matrix_and_201_normalization(caplog):
             "product_id": 123,
             "variant_id": 900,
             "quantity": 1,
-            "price": 6399.99,
         }
     }
     assert json.loads(requests[2].content) == {
@@ -98,9 +96,10 @@ async def test_cart_create_json_transport_matrix_and_201_normalization(caplog):
             "session_id": SESSION_32,
             "product_id": 456,
             "quantity": 1,
-            "price": 100.0,
         }
     }
+    assert "price" not in json.loads(requests[0].content)["Cart"]
+    assert "price" not in json.loads(requests[1].content)["Cart"]
     assert first == {"success": True, "cart": {"cart_id": "77", "session_id": SESSION_32, "cart_url": "https://store.test/cart", "message": "Created", "code": 201}}
     assert "[tray.cart.request]" in caplog.text
     assert "status_code=201" in caplog.text
@@ -137,21 +136,22 @@ async def test_product_803_simple_cart_omits_variant_and_logs_json_types(caplog)
         "session_id": SESSION_26,
     })
 
-    assert json.loads(cart_requests[0].content) == {
+    tray_payload = json.loads(cart_requests[0].content)
+    assert tray_payload == {
         "Cart": {
             "session_id": SESSION_26,
             "product_id": 803,
             "quantity": 1,
-            "price": 4699.99,
         }
     }
+    assert "price" not in tray_payload["Cart"]
     assert result["cart"]["cart_id"] == "8031"
     assert "product_id=803" in caplog.text
     assert "transport=json wrapper=Cart" in caplog.text
     assert "product_id=803 product_id_type=int" in caplog.text
     assert "variant_present=false variant_id_type=none" in caplog.text
     assert "quantity=1 quantity_type=int" in caplog.text
-    assert "price_present=true price_type=float" in caplog.text
+    assert "price_forwarded=false" in caplog.text
     assert "session_length=26" in caplog.text
     assert "session_hash=" in caplog.text
     assert SESSION_26 not in caplog.text
@@ -213,9 +213,9 @@ async def test_cart_resource_passes_json_and_never_passes_form_data():
             "session_id": "session123",
             "product_id": 803,
             "quantity": 1,
-            "price": 4699.99,
         }
     }
+    assert "price" not in kwargs["json"]["Cart"]
     assert "data" not in kwargs
     assert kwargs["follow_redirects"] is False
     assert kwargs["reject_redirects"] is True
@@ -390,7 +390,6 @@ async def test_successive_cart_posts_reuse_the_same_required_session_id():
                 "session_id": SESSION_32,
                 "product_id": 101,
                 "quantity": 1,
-                "price": 10.0,
             }
         },
         {
@@ -398,7 +397,6 @@ async def test_successive_cart_posts_reuse_the_same_required_session_id():
                 "session_id": SESSION_32,
                 "product_id": 202,
                 "quantity": 2,
-                "price": 20.0,
             }
         },
     ]
