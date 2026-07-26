@@ -1,6 +1,6 @@
 # TrayAdapter
 
-Serviço FastAPI independente para comunicação com a API da Tray. Nesta etapa ele não se conecta diretamente ao NSAgent, backend ou frontend e não cria pedidos nem executa cobranças.
+Serviço FastAPI independente para comunicação com a API da Tray. Nesta etapa ele não se conecta diretamente ao NSAgent, backend ou frontend. O Adapter calcula frete, consulta formas de envio e cria, consulta e atualiza dados de envio de pedidos, mas não executa cobranças.
 
 ## Configuração
 
@@ -48,6 +48,11 @@ python -m compileall app tests
 | Carrinho completo | `GET /internal/carts/{session_id}/complete` |
 | Opções de pagamento | `GET /internal/payments/options?cart_session_id=...` |
 | Métodos de pagamento ativos | `GET /internal/payments/methods/active` |
+| Frete | `POST /internal/shippings/quote`, `GET /internal/shippings/methods` |
+| Pedidos | `POST /internal/orders`, `GET /internal/orders`, `GET /internal/orders/{id}` |
+| Pedido completo | `GET /internal/orders/{id}/complete` |
+| Pagamento do pedido | `GET /internal/orders/{id}/payment` |
+| Envio/rastreio | `PUT /internal/orders/{id}/shipping` |
 | Marcas | `GET /internal/brands`, `GET /internal/brands/{id}` |
 | Kits | `GET /internal/kits` |
 | MultiCD | `GET /internal/inventory/distribution-centers`, `GET /internal/inventory/distribution-centers/{id}`, `GET /internal/inventory/products/{id}/distribution-centers` |
@@ -56,7 +61,7 @@ python -m compileall app tests
 | Cupons | `GET /internal/coupons`, `GET /internal/coupons/{id}`, além das seis rotas de relacionamentos por tipo |
 | Usuários | `GET /internal/users` |
 
-As rotas internas são majoritariamente de leitura. A exceção atual é `POST /internal/carts`, que cria ou adiciona um item ao carrinho; as demais operações POST/PUT/DELETE disponíveis nos resources/client continuam sem rotas de execução automática.
+As rotas internas são majoritariamente de leitura. As mutações expostas nesta etapa são `POST /internal/carts`, `POST /internal/orders` e o PUT restrito aos campos de envio/rastreio. As demais operações POST/PUT/DELETE disponíveis nos resources/client continuam sem rotas de execução automática.
 
 ## APIs Tray implementadas
 
@@ -70,6 +75,10 @@ As rotas internas são majoritariamente de leitura. A exceção atual é `POST /
 | Complete cart | `/carts/{session_id}/complete` | GET |
 | Payment options | `/payments/options` | GET |
 | Active payment methods | `/payments/methods/1/active` | GET |
+| Shipping quote | `/shippings/cotation/` | GET |
+| Shipping methods | `/shippings/` | GET |
+| Orders | `/orders`, `/orders/{id}` | GET, POST e PUT restrito a envio |
+| Complete order | `/orders/{id}/full`, fallback `/orders/{id}/complete` | GET |
 | Brands | `/products/brands`, `/products/brands/{id}` | GET, POST, PUT, DELETE |
 | Kits | `/products/kits` | GET |
 | Inventory | `/products/{id}` | GET e PUT de estoque |
@@ -103,8 +112,30 @@ Antes do primeiro item, o NSAgent cria e persiste uma `session_id` estável de c
 
 Erros da API Tray mantêm `success`, `error` e `status_code` e acrescentam, quando disponíveis, `tray_error_code`, `tray_error_type`, `tray_error_field`, `tray_error_fields` e `tray_error_message`. Apenas diagnósticos sanitizados são devolvidos; tokens, credenciais, URLs de erro e payloads completos não são expostos.
 
+## Frete e pedidos
+
+`POST /internal/shippings/quote` recebe CEP e uma lista JSON simples de produtos. O CEP é reduzido a oito dígitos e o resource traduz os itens para `products[n][product_id]`, `price`, `quantity` e `sku` somente quando existe variante. A resposta preserva opções factuais, valores e prazos sem selecionar ou descrever comercialmente uma alternativa. `GET /internal/shippings/methods` apenas consulta os métodos e aceita filtro de status.
+
+`POST /internal/orders` recebe sessão, escolha factual de frete e pagamento, cliente, endereço e produtos. O resource envia `Order`, com `point_sale=PARTICULAR`, `Customer.CustomerAddress` e `ProductsSold`; opcionais ausentes e `variant_id` inexistente não são enviados. `payment_form` recebe o nome factual informado no contrato interno, sem processar pagamento. `shipment` e `shipment_value` recebem diretamente a escolha de frete, sem recotação.
+
+O POST de pedido desativa o retry automático. Em timeout, reset, resposta inválida ou redirect ambíguo, consulta `GET /orders?session_id=...`; se encontrar o pedido, não repete o POST. Caso contrário, permite uma única nova tentativa e, se ela também for ambígua, faz somente uma reconciliação final. Nunca há terceiro POST.
+
+O endpoint interno de pedido completo permanece `/internal/orders/{id}/complete`. No upstream, usa primeiro `/orders/{id}/full` e tenta o legado `/orders/{id}/complete` somente para 404 ou 405. A atualização de envio aceita apenas `status_id`, `shipment`, `shipment_value`, `sending_code`, `sending_date` e `tracking_url`, enviando somente os campos presentes.
+
+`GET /internal/orders/{id}/payment` reutiliza a mesma consulta completa e extrai apenas fatos financeiros. `payment_url` usa primeiro `Order.urls.payment` e, na ausência, uma URL válida de `OrderTransactions[].url_payment`. A URL nunca é construída com `order_id`, `access_code`, sessão, token ou hash. `payments_notification.notification` é callback técnico e não é tratado como link para o cliente. O indicador de pagamento confirmado é `has_payment`; a simples existência de um pedido ou de registros em `Payment` não confirma pagamento.
+
+Shipping label, cancelamento, criação de transportadora, configuração de gateway de frete e processamento de Pix, boleto ou cartão continuam fora do escopo.
+
 ## Imagens e opções de pagamento
 
 Produtos e variantes preservam as imagens retornadas pela Tray, priorizando URLs HTTPS. A URL oficial do produto também é normalizada para uma string, priorizando `url.https` e depois `url.http`. O contrato contém `url`, `images` e `primary_image_url`; nenhuma URL é construída pelo Adapter.
 
-`GET /internal/payments/methods/active` consulta os métodos ativos da loja. `GET /internal/payments/options?cart_session_id=...` consulta opções do carrinho e preserva identificadores, códigos de integração, valores, descontos, acréscimos, impostos e parcelas fornecidos pela Tray. Essas consultas não executam cobrança. Não há endpoint interno de criação de pedido ou pagamento e nenhum dado de cartão é recebido.
+`GET /internal/payments/methods/active` consulta os métodos ativos da loja. `GET /internal/payments/options?cart_session_id=...` consulta opções do carrinho e preserva identificadores, códigos de integração, valores, descontos, acréscimos, impostos e parcelas fornecidos pela Tray. Essas consultas não executam cobrança. A criação do pedido apenas registra `payment_form`; não existe endpoint interno de pagamento e nenhum dado de cartão é recebido.
+
+As capacidades são separadas em três níveis:
+
+- métodos ativos configurados na loja;
+- condições e opções disponíveis para um carrinho ou pedido;
+- iniciação ou processamento de cobrança.
+
+Os dois primeiros níveis são consultas e não provam o terceiro. A documentação oficial da Tray descreve `POST /payments` como cadastro de um pagamento do pedido, recebendo método, valor pago, data e observação. Ela não documenta esse POST como geração de Pix ou boleto, captura de cartão ou solicitação ao gateway. Por isso o Adapter não expõe essa operação e mantém `native_pix_available`, `native_boleto_available` e `native_card_available` como `false`. Cartão deve permanecer no checkout hospedado ou mecanismo oficial indicado por uma URL retornada pela Tray; o Adapter não recebe PAN, CVV ou outros dados de cartão.

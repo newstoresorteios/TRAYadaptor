@@ -15,11 +15,15 @@ from .resources.coupons import CouponResource
 from .resources.customers import CustomerResource
 from .resources.inventory import InventoryResource
 from .resources.kits import KitResource
+from .resources.orders import OrderResource
 from .resources.payments import PaymentOptionsResource
 from .resources.products import ProductResource
+from .resources.shippings import ShippingResource
 from .resources.users import UserResource
 from .resources.variants import VariantResource
 from .schemas.carts import CartCreateRequest
+from .schemas.orders import OrderCreateRequest, OrderShippingUpdateRequest
+from .schemas.shippings import ShippingQuoteRequest
 from .normalizers.common import items
 from .normalizers.product import normalize_product
 from .tray_auth import TrayAuth
@@ -29,20 +33,36 @@ app = FastAPI(title="TrayAdapter")
 _tray_client: TrayClient | None = None
 cart_logger = logging.getLogger("uvicorn.error.tray.cart")
 cart_logger.setLevel(logging.INFO)
+shipping_logger = logging.getLogger("uvicorn.error.tray.shipping")
+shipping_logger.setLevel(logging.INFO)
+order_logger = logging.getLogger("uvicorn.error.tray.order")
+order_logger.setLevel(logging.INFO)
 
 
 @app.middleware("http")
-async def cart_validation_observability(request: Request, call_next):
+async def validation_observability(request: Request, call_next):
     response = await call_next(request)
-    if (
-        request.method == "POST"
-        and request.url.path == "/internal/carts"
-        and response.status_code == 422
-    ):
-        cart_logger.info(
-            "[tray.cart.failure] stage=internal_validation "
-            "error_type=request_validation upstream_status=none"
-        )
+    if response.status_code == 422:
+        if request.method == "POST" and request.url.path == "/internal/carts":
+            cart_logger.info(
+                "[tray.cart.failure] stage=internal_validation "
+                "error_type=request_validation upstream_status=none"
+            )
+        elif (
+            request.method == "POST"
+            and request.url.path == "/internal/shippings/quote"
+        ):
+            shipping_logger.info(
+                "[tray.shipping.quote.request] validation=failed"
+            )
+        elif request.method == "POST" and request.url.path == "/internal/orders":
+            order_logger.info("[tray.order.create.request] validation=failed")
+        elif (
+            request.method == "PUT"
+            and request.url.path.startswith("/internal/orders/")
+            and request.url.path.endswith("/shipping")
+        ):
+            order_logger.info("[tray.order.shipping.update] validation=failed")
     return response
 
 
@@ -75,6 +95,14 @@ def _payment_options_resource() -> PaymentOptionsResource:
     return PaymentOptionsResource(_client())
 
 
+def _shipping_resource() -> ShippingResource:
+    return ShippingResource(_client())
+
+
+def _order_resource() -> OrderResource:
+    return OrderResource(_client())
+
+
 def require_internal_token(request: Request) -> None:
     authorization = request.headers.get("Authorization", "")
     scheme, _, supplied = authorization.partition(" ")
@@ -105,7 +133,11 @@ async def tray_error_handler(request: Request, exc: Exception) -> JSONResponse:
             "tray_error_fields": diagnostics.get("error_fields", []),
             "tray_error_message": diagnostics.get("error_message"),
         })
-        if request.url.path == "/internal/carts":
+        if (
+            request.url.path == "/internal/carts"
+            or request.url.path.startswith("/internal/shippings")
+            or request.url.path.startswith("/internal/orders")
+        ):
             content.update({
                 "tray_error_name": diagnostics.get("error_name"),
                 "tray_error_causes": diagnostics.get("error_causes", []),
@@ -148,6 +180,9 @@ PRODUCT_FILTERS = {
     "property_value_id", "current_price", "current_price_range",
 }
 CUSTOMER_FILTERS = {"id", "name", "email", "cpf", "cnpj", "created", "modified", "attrs", "limit", "page", "sort"}
+ORDER_FILTERS = {
+    "id", "status", "customer_id", "session_id", "limit", "page", "sort",
+}
 
 
 def _product_params(request: Request) -> dict[str, Any]:
@@ -178,6 +213,22 @@ def _catalog_params(request: Request, allowed: set[str]) -> dict[str, Any]:
         key: value
         for key, value in request.query_params.items()
         if key in allowed and value != ""
+    }
+    try:
+        limit = int(values.get("limit", 20))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="limit must be an integer") from exc
+    if not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
+    values["limit"] = limit
+    return values
+
+
+def _order_params(request: Request) -> dict[str, Any]:
+    values = {
+        key: value
+        for key, value in request.query_params.items()
+        if key in ORDER_FILTERS and value != ""
     }
     try:
         limit = int(values.get("limit", 20))
@@ -259,6 +310,52 @@ async def internal_payment_options(cart_session_id: str = Query(..., min_length=
 @app.get("/internal/payments/methods/active", dependencies=[Depends(require_internal_token)])
 async def internal_active_payment_methods():
     return await _payment_options_resource().list_active_methods()
+
+
+@app.post("/internal/shippings/quote", dependencies=[Depends(require_internal_token)])
+async def internal_shipping_quote(payload: ShippingQuoteRequest):
+    return await _shipping_resource().quote(payload.model_dump(exclude_none=True))
+
+
+@app.get("/internal/shippings/methods", dependencies=[Depends(require_internal_token)])
+async def internal_shipping_methods(status: str | None = Query(default=None)):
+    return await _shipping_resource().methods(status)
+
+
+@app.post("/internal/orders", dependencies=[Depends(require_internal_token)])
+async def internal_order_create(payload: OrderCreateRequest):
+    return await _order_resource().create(payload.model_dump(exclude_none=True))
+
+
+@app.get("/internal/orders", dependencies=[Depends(require_internal_token)])
+async def internal_orders(request: Request):
+    return await _order_resource().list(_order_params(request))
+
+
+@app.get("/internal/orders/{order_id}/complete", dependencies=[Depends(require_internal_token)])
+async def internal_order_complete(order_id: int):
+    return await _order_resource().complete(order_id)
+
+
+@app.get("/internal/orders/{order_id}/payment", dependencies=[Depends(require_internal_token)])
+async def internal_order_payment(order_id: int):
+    return await _order_resource().payment(order_id)
+
+
+@app.put("/internal/orders/{order_id}/shipping", dependencies=[Depends(require_internal_token)])
+async def internal_order_shipping_update(
+    order_id: int,
+    payload: OrderShippingUpdateRequest,
+):
+    return await _order_resource().update_shipping(
+        order_id,
+        payload.model_dump(exclude_none=True),
+    )
+
+
+@app.get("/internal/orders/{order_id}", dependencies=[Depends(require_internal_token)])
+async def internal_order(order_id: int):
+    return await _order_resource().get(order_id)
 
 
 @app.get("/internal/brands", dependencies=[Depends(require_internal_token)])
