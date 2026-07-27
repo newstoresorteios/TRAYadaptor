@@ -357,6 +357,61 @@ async def test_cart_complete_normalizes_multiple_items_prices_quantities_and_ima
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_methods", "expected"),
+    [
+        (
+            [
+                {
+                    "payment_method_id": "7",
+                    "blocked": "1",
+                    "max_plots": "6",
+                }
+            ],
+            [
+                {
+                    "payment_method_id": "7",
+                    "blocked": "1",
+                    "max_plots": "6",
+                }
+            ],
+        ),
+        ([], []),
+    ],
+)
+async def test_cart_complete_preserves_payment_methods_by_product(
+    raw_methods,
+    expected,
+):
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        return response(
+            request,
+            {
+                "Cart": {
+                    "session_id": "SESSION",
+                    "Products": [
+                        {
+                            "id": "803",
+                            "quantity": "1",
+                            "price": "4699.99",
+                            "PaymentMethodByProduct": raw_methods,
+                        }
+                    ],
+                }
+            },
+        )
+
+    result = await CartResource(client(handler)).complete("SESSION")
+
+    assert result["cart"]["items"][0]["payment_methods"] == expected
+
+
+@pytest.mark.asyncio
 async def test_successive_cart_posts_reuse_the_same_required_session_id():
     payloads = []
 

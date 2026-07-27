@@ -46,7 +46,7 @@ python -m compileall app tests
 | Categorias | `GET /internal/categories`, `GET /internal/categories/{id}`, `GET /internal/categories/tree/{id}` |
 | Carrinhos | `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `GET /internal/carts/{session_id}` |
 | Carrinho completo | `GET /internal/carts/{session_id}/complete` |
-| Opções de pagamento | `GET /internal/payments/options?cart_session_id=...` |
+| Opções de pagamento | `GET /internal/payments/options?cart_session_id=...` ou `?order_id=...` |
 | Métodos de pagamento ativos | `GET /internal/payments/methods/active` |
 | Frete | `POST /internal/shippings/quote`, `GET /internal/shippings/methods` |
 | Pedidos | `POST /internal/orders`, `GET /internal/orders`, `GET /internal/orders/{id}` |
@@ -132,7 +132,7 @@ Shipping label, cancelamento, criação de transportadora, configuração de gat
 
 Produtos e variantes preservam as imagens retornadas pela Tray, priorizando URLs HTTPS. A URL oficial do produto também é normalizada para uma string, priorizando `url.https` e depois `url.http`. O contrato contém `url`, `images` e `primary_image_url`; nenhuma URL é construída pelo Adapter.
 
-`GET /internal/payments/methods/active` consulta os métodos ativos da loja. `GET /internal/payments/options?cart_session_id=...` consulta opções do carrinho e preserva identificadores, códigos de integração, valores, descontos, acréscimos, impostos e parcelas fornecidos pela Tray. Essas consultas não executam cobrança. A criação do pedido apenas registra `payment_form`; não existe endpoint interno de pagamento e nenhum dado de cartão é recebido.
+`GET /internal/payments/methods/active` consulta os métodos ativos da loja. `GET /internal/payments/options` exige exatamente um entre `cart_session_id` e `order_id`, consultando as opções factuais do carrinho ou do pedido e preservando identificadores, códigos de integração, valores, descontos, acréscimos, impostos e parcelas fornecidos pela Tray. Essas consultas não executam cobrança. A criação do pedido apenas registra `payment_form`; não existe endpoint interno de pagamento e nenhum dado de cartão é recebido.
 
 As capacidades são separadas em três níveis:
 

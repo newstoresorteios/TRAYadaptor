@@ -36,8 +36,9 @@ def configure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_payment_options_preserve_card_plots_and_pix_discount():
+async def test_payment_options_preserve_card_plots_and_pix_discount(caplog):
     calls = []
+    caplog.set_level("INFO", logger="uvicorn.error.tray.payments")
 
     async def handler(request):
         calls.append((request.method, request.url.path, dict(request.url.params)))
@@ -47,9 +48,13 @@ async def test_payment_options_preserve_card_plots_and_pix_discount():
             "paymentoptions": [
                 {
                     "id": "1",
+                    "code": "CARD_CODE",
                     "integrator_id": "123",
                     "facilitator_id": "",
                     "name": "Cartão de crédito",
+                    "image": "card.png",
+                    "thumbnail": "card-small.png",
+                    "additional": "0",
                     "text": "Visa",
                     "text_pag": "Cartão",
                     "card": "1",
@@ -59,6 +64,7 @@ async def test_payment_options_preserve_card_plots_and_pix_discount():
                     "integration_code": "3",
                     "facilitator": "0",
                     "finalize_action": "redirect",
+                    "display_increase": "1",
                     "discount_value": "0.00",
                     "increase_value": "0.00",
                     "total_base": "100.00",
@@ -94,6 +100,21 @@ async def test_payment_options_preserve_card_plots_and_pix_discount():
                     "tax_value": "0.00",
                     "plots": [],
                 },
+                {
+                    "id": "3",
+                    "name": "Boleto - Tray",
+                    "text": "Boleto",
+                    "card": "0",
+                    "finalize_action": "redirect",
+                    "plots": [],
+                },
+                {
+                    "id": "4",
+                    "name": "Future Gateway XPTO",
+                    "integration_code": "future-xpto",
+                    "card": "0",
+                    "plots": [],
+                },
             ]
         })
 
@@ -104,13 +125,23 @@ async def test_payment_options_preserve_card_plots_and_pix_discount():
         "/web_api/payments/options",
         {"cart_session_id": "SESSION", "access_token": "a"},
     )
-    card, pix = result["payment_options"]
+    card, pix, boleto, unknown = result["payment_options"]
     assert card["card"] == 1
+    assert card["code"] == "CARD_CODE"
+    assert card["integrator_id"] == "123"
+    assert card["facilitator_id"] == ""
+    assert card["image"] == "card.png"
+    assert card["thumbnail"] == "card-small.png"
+    assert card["additional"] == "0"
     assert card["integration_code"] == "3"
     assert card["min_splot"] == 1
     assert card["max_splot"] == 12
     assert card["application_value"] == 1.0
     assert card["finalize_action"] == "redirect"
+    assert card["display_increase"] == 1
+    assert card["increase_value"] == 0.0
+    assert card["total_base"] == 100.0
+    assert card["tax_value"] == 0.0
     assert card["is_intermediator"] == 1
     assert card["equivalent"] == ["4", "5"]
     assert card["plots"][1] == {
@@ -125,13 +156,41 @@ async def test_payment_options_preserve_card_plots_and_pix_discount():
     assert pix["name"] == "Pix"
     assert pix["discount_value"] == 5.0
     assert pix["plots"] == []
+    assert boleto["name"] == "Boleto - Tray"
+    assert boleto["text"] == "Boleto"
+    assert boleto["finalize_action"] == "redirect"
+    assert unknown == {
+        "id": "4",
+        "name": "Future Gateway XPTO",
+        "integration_code": "future-xpto",
+        "card": 0,
+        "plots": [],
+    }
+    assert "scope=cart" in caplog.text
+    assert "option_count=4" in caplog.text
+    assert "SESSION" not in caplog.text
 
 
 class FakePaymentOptionsResource:
-    async def list_for_cart(self, cart_session_id):
+    def __init__(self):
+        self.option_calls = []
+
+    async def list_options(self, *, cart_session_id=None, order_id=None):
+        self.option_calls.append(
+            {
+                "cart_session_id": cart_session_id,
+                "order_id": order_id,
+            }
+        )
         return {
             "success": True,
-            "payment_options": [{"id": "1", "name": "Pix", "cart_session_id": cart_session_id}],
+            "payment_options": [
+                {
+                    "id": "1",
+                    "name": "Pix",
+                    "scope_value": cart_session_id or order_id,
+                }
+            ],
         }
 
     async def list_active_methods(self):
@@ -141,10 +200,12 @@ class FakePaymentOptionsResource:
         }
 
 
-def test_payment_options_require_bearer_and_cart_session_id(monkeypatch):
+def test_payment_options_require_bearer_and_exactly_one_scope(monkeypatch):
     configure(monkeypatch)
-    monkeypatch.setattr(main, "_payment_options_resource", lambda: FakePaymentOptionsResource())
+    resource = FakePaymentOptionsResource()
+    monkeypatch.setattr(main, "_payment_options_resource", lambda: resource)
     api = TestClient(main.app)
+    headers = {"Authorization": "Bearer adapter-token"}
 
     assert api.get("/internal/payments/options?cart_session_id=SESSION").status_code == 401
     assert api.get(
@@ -153,18 +214,64 @@ def test_payment_options_require_bearer_and_cart_session_id(monkeypatch):
     ).status_code == 401
     assert api.get(
         "/internal/payments/options",
-        headers={"Authorization": "Bearer adapter-token"},
+        headers=headers,
     ).status_code == 422
-    result = api.get(
+    assert api.get(
+        "/internal/payments/options?cart_session_id=SESSION&order_id=123",
+        headers=headers,
+    ).status_code == 422
+    cart_result = api.get(
         "/internal/payments/options?cart_session_id=SESSION",
-        headers={"Authorization": "Bearer adapter-token"},
+        headers=headers,
     )
-    assert result.status_code == 200
-    assert result.json()["payment_options"][0]["cart_session_id"] == "SESSION"
+    order_result = api.get(
+        "/internal/payments/options?order_id=123",
+        headers=headers,
+    )
+
+    assert cart_result.status_code == 200
+    assert cart_result.json()["payment_options"][0]["scope_value"] == "SESSION"
+    assert order_result.status_code == 200
+    assert order_result.json()["payment_options"][0]["scope_value"] == 123
+    assert resource.option_calls == [
+        {"cart_session_id": "SESSION", "order_id": None},
+        {"cart_session_id": None, "order_id": 123},
+    ]
 
 
-def test_payment_options_upstream_error_is_not_an_empty_result(monkeypatch):
+@pytest.mark.asyncio
+async def test_payment_options_order_scope_forwards_only_order_id(caplog):
+    calls = []
+    caplog.set_level("INFO", logger="uvicorn.error.tray.payments")
+
+    async def handler(request):
+        calls.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        return response(request, {"paymentoptions": []})
+
+    result = await PaymentOptionsResource(client(handler)).list_for_order(123)
+
+    assert calls[-1] == (
+        "GET",
+        "/web_api/payments/options",
+        {"order_id": "123", "access_token": "a"},
+    )
+    assert result == {"success": True, "payment_options": []}
+    assert "scope=order" in caplog.text
+    assert "option_count=0" in caplog.text
+    assert "access_token" not in caplog.text
+
+
+def test_payment_options_upstream_error_is_not_an_empty_result(
+    monkeypatch,
+    caplog,
+):
     configure(monkeypatch)
+    caplog.set_level("INFO", logger="uvicorn.error.tray.payments")
 
     async def handler(request):
         if request.url.path.endswith("/auth"):
@@ -192,6 +299,9 @@ def test_payment_options_upstream_error_is_not_an_empty_result(monkeypatch):
         "tray_error_fields": [],
         "tray_error_message": "Unavailable",
     }
+    assert "scope=cart" in caplog.text
+    assert "success=false status_code=503" in caplog.text
+    assert "SESSION" not in caplog.text
 
 
 @pytest.mark.asyncio

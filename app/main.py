@@ -327,8 +327,19 @@ async def internal_cart(session_id: str):
 
 
 @app.get("/internal/payments/options", dependencies=[Depends(require_internal_token)])
-async def internal_payment_options(cart_session_id: str = Query(..., min_length=1)):
-    return await _payment_options_resource().list_for_cart(cart_session_id)
+async def internal_payment_options(
+    cart_session_id: str | None = Query(default=None, min_length=1),
+    order_id: int | None = Query(default=None, gt=0),
+):
+    if (cart_session_id is None) == (order_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="exactly one of cart_session_id or order_id is required",
+        )
+    return await _payment_options_resource().list_options(
+        cart_session_id=cart_session_id,
+        order_id=order_id,
+    )
 
 
 @app.get("/internal/payments/methods/active", dependencies=[Depends(require_internal_token)])
