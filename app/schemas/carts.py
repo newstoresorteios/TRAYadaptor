@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..identifiers import normalize_optional_variant_id
+
 
 class CartCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
@@ -45,3 +47,8 @@ class CartItemQuantityUpdateRequest(BaseModel):
     product_id: int = Field(gt=0)
     variant_id: int | None = Field(default=None, gt=0)
     quantity: int = Field(ge=1)
+
+    @field_validator("variant_id", mode="before")
+    @classmethod
+    def normalize_variant_id(cls, value):
+        return normalize_optional_variant_id(value)

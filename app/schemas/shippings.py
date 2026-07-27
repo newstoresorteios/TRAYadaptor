@@ -3,6 +3,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..identifiers import normalize_optional_variant_id
+
 
 def normalize_zipcode(value: str) -> str:
     zipcode = re.sub(r"\D", "", value)
@@ -18,6 +20,11 @@ class ShippingQuoteProduct(BaseModel):
     variant_id: int | None = Field(default=None, gt=0)
     price: Decimal = Field(ge=0)
     quantity: int = Field(gt=0)
+
+    @field_validator("variant_id", mode="before")
+    @classmethod
+    def normalize_variant_id(cls, value):
+        return normalize_optional_variant_id(value)
 
 
 class ShippingQuoteRequest(BaseModel):

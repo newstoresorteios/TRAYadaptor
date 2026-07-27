@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 
+from ..identifiers import normalize_optional_variant_id
 from .shippings import normalize_zipcode
 
 
@@ -22,7 +23,7 @@ class OrderShipping(BaseModel):
     )
 
     shipping_id: int = Field(gt=0)
-    quotation_id: str = Field(min_length=1)
+    quotation_id: str | None = Field(default=None, min_length=1)
     name: str = Field(min_length=1)
     value: Decimal = Field(ge=0)
     min_period: int | None = Field(default=None, ge=0)
@@ -30,8 +31,8 @@ class OrderShipping(BaseModel):
 
     @field_validator("quotation_id", mode="before")
     @classmethod
-    def stringify_quotation_id(cls, value: Any) -> str:
-        return str(value)
+    def stringify_quotation_id(cls, value: Any) -> str | None:
+        return str(value) if value is not None else None
 
 
 class OrderPayment(BaseModel):
@@ -134,6 +135,11 @@ class OrderProduct(BaseModel):
     price: Decimal = Field(ge=0)
     original_price: Decimal = Field(ge=0)
     quantity: int = Field(gt=0)
+
+    @field_validator("variant_id", mode="before")
+    @classmethod
+    def normalize_variant_id(cls, value):
+        return normalize_optional_variant_id(value)
 
 
 class OrderCreateRequest(BaseModel):

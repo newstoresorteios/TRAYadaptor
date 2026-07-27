@@ -137,7 +137,9 @@ async def test_order_create_wraps_customer_address_products_and_omits_optionals(
             201,
         )
 
-    result = await OrderResource(client(handler)).create(order_payload())
+    payload = order_payload()
+    payload["products"][0]["variant_id"] = "0"
+    result = await OrderResource(client(handler)).create(payload)
     tray_payload = json.loads(requests[0].content)
     assert requests[0].method == "POST"
     assert requests[0].url.path == "/web_api/orders"
@@ -234,7 +236,9 @@ def test_order_route_normalizes_customer_and_address_and_omits_blank_optional(
     api = TestClient(main.app)
     headers = {"Authorization": "Bearer adapter-token"}
     body = order_payload()
+    body["shipping"]["quotation_id"] = None
     body["shipping"]["value"] = "35.10"
+    body["products"][0]["variant_id"] = "0"
     for product in body["products"]:
         product["price"] = str(product["price"])
         product["original_price"] = str(product["original_price"])
@@ -255,6 +259,17 @@ def test_order_route_normalizes_customer_and_address_and_omits_blank_optional(
     assert resource.payload["address"]["state"] == "SP"
     assert resource.payload["address"]["country"] == "BRA"
     assert "complement" not in resource.payload["address"]
+    assert "quotation_id" not in resource.payload["shipping"]
+    assert "variant_id" not in resource.payload["products"][0]
+
+    missing_original_price = json.loads(json.dumps(body))
+    missing_original_price["products"][0].pop("original_price")
+    invalid = api.post(
+        "/internal/orders",
+        json=missing_original_price,
+        headers=headers,
+    )
+    assert invalid.status_code == 422
 
 
 @pytest.mark.asyncio

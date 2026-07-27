@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
+from ..identifiers import normalize_optional_variant_id
 from .common import items
 
 
@@ -372,9 +373,14 @@ def _normalize_address(value: Any) -> dict[str, Any]:
 def _normalize_product(value: Any) -> dict[str, Any]:
     product = _unwrap(value, "ProductsSold", "ProductSold", "product")
     result: dict[str, Any] = {}
-    for key in ("product_id", "variant_id"):
-        if product.get(key) is not None and str(product.get(key)).strip() not in {"", "0"}:
-            result[key] = _identifier(product[key])
+    if product.get("product_id") is not None:
+        result["product_id"] = _identifier(product["product_id"])
+    try:
+        variant_id = normalize_optional_variant_id(product.get("variant_id"))
+    except ValueError:
+        variant_id = None
+    if variant_id is not None:
+        result["variant_id"] = variant_id
     _copy_present(result, product, ("name",))
     if product.get("quantity") is not None:
         result["quantity"] = _integer(product["quantity"])

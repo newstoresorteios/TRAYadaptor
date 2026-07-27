@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ..exceptions import TrayAPIError, TrayConnectionError, TrayError, TrayValidationError
+from ..identifiers import normalize_optional_variant_id
 from ..normalizers.cart import normalize_cart
 from ..normalizers.variant import normalize_variant
 
@@ -414,8 +415,9 @@ def _tray_quantity_payload(
         "product_id": product_id,
         "quantity": quantity,
     }
-    if payload.get("variant_id") is not None:
-        cart["variant_id"] = _numeric_identifier(payload["variant_id"])
+    variant_id = normalize_optional_variant_id(payload.get("variant_id"))
+    if variant_id is not None:
+        cart["variant_id"] = variant_id
     return {"Cart": cart}
 
 
@@ -456,12 +458,7 @@ def _numeric_identifier(value: Any) -> int:
 
 
 def _optional_variant_identifier(value: Any) -> int | None:
-    if value is None or str(value).strip() == "0":
-        return None
-    text = str(value).strip()
-    if not text or text.lower() in {"none", "null"}:
-        raise ValueError("variant identifier is invalid")
-    return _numeric_identifier(text)
+    return normalize_optional_variant_id(value)
 
 
 def _session_identifier(value: Any) -> str:
@@ -585,10 +582,8 @@ def _is_ambiguous_api_failure(exc: TrayAPIError) -> bool:
     )
 
 
-def _variant_identity(value: Any) -> str | None:
-    if value is None or str(value).strip() in {"", "0"}:
-        return None
-    return str(value).strip()
+def _variant_identity(value: Any) -> int | None:
+    return normalize_optional_variant_id(value)
 
 
 def _find_cart_item(

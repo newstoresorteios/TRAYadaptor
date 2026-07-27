@@ -10,6 +10,7 @@ from ..exceptions import (
     TrayError,
     TrayValidationError,
 )
+from ..identifiers import normalize_optional_variant_id
 from ..normalizers.order import (
     normalize_order,
     normalize_order_complete,
@@ -294,8 +295,9 @@ def _tray_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "original_price": _decimal_string(product["original_price"]),
             "quantity": product["quantity"],
         }
-        if product.get("variant_id") is not None:
-            sold["variant_id"] = product["variant_id"]
+        variant_id = normalize_optional_variant_id(product.get("variant_id"))
+        if variant_id is not None:
+            sold["variant_id"] = variant_id
         products.append(sold)
 
     order = {
@@ -369,7 +371,10 @@ def _log_create_request(payload: dict[str, Any]) -> None:
         sum(
             1
             for product in payload["products"]
-            if product.get("variant_id") is not None
+            if (
+                normalize_optional_variant_id(product.get("variant_id"))
+                is not None
+            )
         ),
     )
 

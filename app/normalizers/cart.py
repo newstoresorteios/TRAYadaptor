@@ -1,5 +1,6 @@
 from typing import Any
 
+from ..identifiers import normalize_optional_variant_id
 from .common import first, number
 from .image import normalize_images, primary_image_url
 
@@ -11,6 +12,13 @@ def _unwrap_cart(payload: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     return (cart if isinstance(cart, dict) else {}), payload
 
 
+def _normalize_read_variant_id(value: Any) -> int | None:
+    try:
+        return normalize_optional_variant_id(value)
+    except ValueError:
+        return None
+
+
 def _normalize_cart_product(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -18,9 +26,12 @@ def _normalize_cart_product(value: Any) -> dict[str, Any]:
     product_id = first(value, "product_id", "id")
     if product_id is not None:
         result["product_id"] = product_id
-    for key in ("cart_id", "variant_id", "name", "reference", "additional_information", "available"):
+    for key in ("cart_id", "name", "reference", "additional_information", "available"):
         if key in value:
             result[key] = value[key]
+    variant_id = _normalize_read_variant_id(value.get("variant_id"))
+    if variant_id is not None:
+        result["variant_id"] = variant_id
     if "quantity" in value:
         result["quantity"] = number(value["quantity"], integer=True)
     if "price" in value:
@@ -60,9 +71,12 @@ def normalize_cart(payload: Any) -> dict[str, Any]:
         if value is not None:
             result[output] = value
 
-    for key in ("product_id", "product_name", "variant_id", "additional_information", "date"):
+    for key in ("product_id", "product_name", "additional_information", "date"):
         if key in cart:
             result[key] = cart[key]
+    variant_id = _normalize_read_variant_id(cart.get("variant_id"))
+    if variant_id is not None:
+        result["variant_id"] = variant_id
     if "quantity" in cart:
         result["quantity"] = number(cart["quantity"], integer=True)
     for key in ("price", "total", "sub_total"):

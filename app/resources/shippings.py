@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Any
 
 from ..exceptions import TrayError, TrayValidationError
+from ..identifiers import normalize_optional_variant_id
 from ..normalizers.shipping import normalize_shipping_methods, normalize_shipping_quote
 
 logger = logging.getLogger("uvicorn.error.tray.shipping")
@@ -27,7 +28,10 @@ class ShippingResource:
             sum(
                 1
                 for product in payload["products"]
-                if product.get("variant_id") is not None
+                if (
+                    normalize_optional_variant_id(product.get("variant_id"))
+                    is not None
+                )
             ),
         )
         try:
@@ -92,13 +96,7 @@ def _quote_params(payload: dict[str, Any]) -> dict[str, Any]:
         params[f"{prefix}[product_id]"] = product_id
         params[f"{prefix}[price]"] = _decimal_string(product["price"])
         params[f"{prefix}[quantity]"] = quantity
-        variant_id = product.get("variant_id")
+        variant_id = normalize_optional_variant_id(product.get("variant_id"))
         if variant_id is not None:
-            if (
-                not isinstance(variant_id, int)
-                or isinstance(variant_id, bool)
-                or variant_id < 1
-            ):
-                raise ValueError("variant_id must be a positive integer")
             params[f"{prefix}[sku]"] = variant_id
     return params

@@ -302,7 +302,7 @@ async def test_cart_read_uses_session_path_and_normalizes_useful_fields():
 
     result = await CartResource(client(handler)).get("SESSION")
     assert paths[-1] == "/web_api/carts/SESSION"
-    assert result["cart"] == {"session_id": "SESSION", "product_id": "123", "product_name": "Produto", "variant_id": "900", "quantity": 2, "price": 49.9}
+    assert result["cart"] == {"session_id": "SESSION", "product_id": "123", "product_name": "Produto", "variant_id": 900, "quantity": 2, "price": 49.9}
 
 
 @pytest.mark.asyncio
@@ -333,7 +333,7 @@ async def test_cart_complete_normalizes_multiple_items_prices_quantities_and_ima
                         "id": "456",
                         "cart_id": "c2",
                         "name": "Produto B",
-                        "variant_id": "v2",
+                        "variant_id": "123",
                         "quantity": "1",
                         "price": "50.00",
                         "stock": "3",
@@ -352,7 +352,7 @@ async def test_cart_complete_normalizes_multiple_items_prices_quantities_and_ima
     assert result["cart"]["items"][0]["quantity"] == 2
     assert result["cart"]["items"][0]["price"] == 49.9
     assert result["cart"]["items"][0]["primary_image_url"] == "https://tray.test/a.jpg"
-    assert result["cart"]["items"][1]["variant_id"] == "v2"
+    assert result["cart"]["items"][1]["variant_id"] == 123
     assert len(result["cart"]["items"]) == 2
 
 
@@ -1305,14 +1305,24 @@ def test_cart_quantity_route_has_dedicated_schema_without_price(monkeypatch, cap
     assert resource.calls == [
         (SESSION_32, {"product_id": 803, "quantity": 1})
     ]
+    for sentinel in (0, "0", ""):
+        zero_variant = {**body, "variant_id": sentinel}
+        assert api.put(path, json=zero_variant, headers=headers).status_code == 200
+    assert resource.calls == [
+        (SESSION_32, {"product_id": 803, "quantity": 1}),
+        (SESSION_32, {"product_id": 803, "quantity": 1}),
+        (SESSION_32, {"product_id": 803, "quantity": 1}),
+        (SESSION_32, {"product_id": 803, "quantity": 1}),
+    ]
     for invalid in (
         {**body, "quantity": 0},
         {**body, "product_id": 0},
-        {**body, "variant_id": 0},
+        {**body, "variant_id": -1},
+        {**body, "variant_id": "invalid"},
         {**body, "price": "3799.99"},
     ):
         assert api.put(path, json=invalid, headers=headers).status_code == 422
-    assert len(resource.calls) == 1
+    assert len(resource.calls) == 4
     assert "[tray.cart.quantity.update]" in caplog.text
     routes = [
         route

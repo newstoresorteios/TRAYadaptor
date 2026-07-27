@@ -146,12 +146,13 @@ def test_shipping_quote_route_normalizes_zipcode_and_rejects_invalid_products(
     headers = {"Authorization": "Bearer adapter-token"}
     body = {
         "zipcode": "19900-000",
-        "products": [{"product_id": 803, "price": "10.00", "quantity": 1}],
+        "products": [{"product_id": 803, "variant_id": "0", "price": "10.00", "quantity": 1}],
     }
 
     result = api.post("/internal/shippings/quote", json=body, headers=headers)
     assert result.status_code == 200
     assert resource.payloads[0]["zipcode"] == "19900000"
+    assert "variant_id" not in resource.payloads[0]["products"][0]
     assert api.post(
         "/internal/shippings/quote",
         json={**body, "zipcode": "1990"},
