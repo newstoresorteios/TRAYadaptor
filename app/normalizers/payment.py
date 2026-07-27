@@ -37,6 +37,7 @@ def normalize_payment_option(value: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in (
         "id",
+        "code",
         "integrator_id",
         "facilitator_id",
         "name",

@@ -212,6 +212,7 @@ async def test_active_payment_methods_preserve_documented_fields():
                     "id": "10",
                     "name": "Método",
                     "text": "Texto",
+                    "code": "FACTUAL_CODE",
                     "card": "0",
                     "min_splot": "1",
                     "max_splot": "1",
@@ -236,12 +237,63 @@ async def test_active_payment_methods_preserve_documented_fields():
     assert calls[-1] == ("GET", "/web_api/payments/methods/1/active")
     method = result["payment_methods"][0]
     assert method["id"] == "10"
+    assert method["code"] == "FACTUAL_CODE"
     assert method["application_value"] == 95.0
     assert method["discount_value"] == 5.0
     assert method["facilitator"] == 1
     assert method["is_intermediator"] == 1
     assert method["image"] == "method.png"
     assert method["thumbnail"] == "method-small.png"
+
+
+@pytest.mark.asyncio
+async def test_active_payment_methods_keep_factual_gateway_names_without_inference():
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": "687890",
+            })
+        return response(request, {
+            "PaymentMethods": [
+                {
+                    "PaymentOption": {
+                        "id": "10545",
+                        "name": "Pix - Vindi",
+                        "card": "0",
+                        "plots": [],
+                    }
+                },
+                {
+                    "PaymentOption": {
+                        "id": "99999",
+                        "name": "Future Gateway XPTO",
+                        "card": "0",
+                        "plots": [],
+                    }
+                },
+            ]
+        })
+
+    methods = (
+        await PaymentOptionsResource(client(handler)).list_active_methods()
+    )["payment_methods"]
+
+    assert methods == [
+        {
+            "id": "10545",
+            "name": "Pix - Vindi",
+            "card": 0,
+            "plots": [],
+        },
+        {
+            "id": "99999",
+            "name": "Future Gateway XPTO",
+            "card": 0,
+            "plots": [],
+        },
+    ]
 
 
 @pytest.mark.asyncio
