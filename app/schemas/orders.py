@@ -22,29 +22,37 @@ class OrderShipping(BaseModel):
         allow_inf_nan=False,
     )
 
-    shipping_id: int = Field(gt=0)
+    shipping_id: int | None = Field(default=None, gt=0)
     quotation_id: str | None = Field(default=None, min_length=1)
     name: str = Field(min_length=1)
     value: Decimal = Field(ge=0)
     min_period: int | None = Field(default=None, ge=0)
     max_period: int | None = Field(default=None, ge=0)
 
+    @field_validator("shipping_id", mode="before")
+    @classmethod
+    def omit_non_positive_shipping_id(cls, value: Any) -> Any:
+        try:
+            return value if value is not None and int(str(value)) > 0 else None
+        except (TypeError, ValueError):
+            return None
+
     @field_validator("quotation_id", mode="before")
     @classmethod
     def stringify_quotation_id(cls, value: Any) -> str | None:
-        return str(value) if value is not None else None
+        return (str(value).strip() or None) if value is not None else None
 
 
 class OrderPayment(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    method_id: str = Field(min_length=1)
+    method_id: str | None = Field(default=None, min_length=1)
     name: str = Field(min_length=1)
 
     @field_validator("method_id", mode="before")
     @classmethod
-    def stringify_method_id(cls, value: Any) -> str:
-        return str(value)
+    def stringify_method_id(cls, value: Any) -> str | None:
+        return (str(value).strip() or None) if value is not None else None
 
 
 class OrderCustomer(BaseModel):
@@ -70,6 +78,8 @@ class OrderCustomer(BaseModel):
     @classmethod
     def validate_phone(cls, value: str) -> str:
         phone = re.sub(r"\D", "", value)
+        if len(phone) in (12, 13) and phone.startswith("55"):
+            phone = phone[2:]
         if not 10 <= len(phone) <= 11:
             raise ValueError("must contain 10 or 11 digits")
         return phone

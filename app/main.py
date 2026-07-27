@@ -4,6 +4,8 @@ import hmac
 import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .config import get_settings
@@ -156,6 +158,32 @@ async def tray_error_handler(request: Request, exc: Exception) -> JSONResponse:
                 "tray_error_causes": diagnostics.get("error_causes", []),
             })
     return JSONResponse(status_code=status, content=content)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    errors = exc.errors()
+    fields = sorted({
+        ".".join(str(part) for part in error.get("loc", ()))
+        for error in errors
+    })[:10]
+    reasons = sorted({str(error.get("msg", ""))[:80] for error in errors})[:10]
+    if request.method == "POST" and request.url.path == "/internal/orders":
+        order_logger.info(
+            "[tray.order.create.validation] failed=true fields=%s reasons=%s",
+            fields,
+            reasons,
+        )
+    safe_errors = [
+        {key: value for key, value in error.items() if key != "input"}
+        for error in errors
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={"detail": jsonable_encoder(safe_errors)},
+    )
 
 
 @app.get("/health")
