@@ -21,7 +21,7 @@ from .resources.products import ProductResource
 from .resources.shippings import ShippingResource
 from .resources.users import UserResource
 from .resources.variants import VariantResource
-from .schemas.carts import CartCreateRequest
+from .schemas.carts import CartCreateRequest, CartItemQuantityUpdateRequest
 from .schemas.orders import OrderCreateRequest, OrderShippingUpdateRequest
 from .schemas.shippings import ShippingQuoteRequest
 from .normalizers.common import items
@@ -47,6 +47,14 @@ async def validation_observability(request: Request, call_next):
             cart_logger.info(
                 "[tray.cart.failure] stage=internal_validation "
                 "error_type=request_validation upstream_status=none"
+            )
+        elif (
+            request.method == "PUT"
+            and request.url.path.startswith("/internal/carts/")
+            and request.url.path.endswith("/items")
+        ):
+            cart_logger.info(
+                "[tray.cart.quantity.update] status_code=none"
             )
         elif (
             request.method == "POST"
@@ -135,6 +143,11 @@ async def tray_error_handler(request: Request, exc: Exception) -> JSONResponse:
         })
         if (
             request.url.path == "/internal/carts"
+            or (
+                request.method == "PUT"
+                and request.url.path.startswith("/internal/carts/")
+                and request.url.path.endswith("/items")
+            )
             or request.url.path.startswith("/internal/shippings")
             or request.url.path.startswith("/internal/orders")
         ):
@@ -290,6 +303,17 @@ async def internal_category(category_id: str):
 @app.post("/internal/carts", dependencies=[Depends(require_internal_token)])
 async def internal_cart_create(payload: CartCreateRequest):
     return await _cart_resource().create(payload.model_dump(exclude_none=True))
+
+
+@app.put("/internal/carts/{session_id}/items", dependencies=[Depends(require_internal_token)])
+async def internal_cart_item_quantity_update(
+    session_id: str,
+    payload: CartItemQuantityUpdateRequest,
+):
+    return await _cart_resource().set_item_quantity(
+        session_id,
+        payload.model_dump(exclude_none=True),
+    )
 
 
 @app.get("/internal/carts/{session_id}/complete", dependencies=[Depends(require_internal_token)])

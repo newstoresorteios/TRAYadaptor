@@ -963,3 +963,361 @@ async def test_cart_normalization_failure_is_identified(monkeypatch, caplog):
         })
 
     assert "stage=normalization" in caplog.text
+
+def _complete_quantity_cart(
+    quantity,
+    *,
+    product_id=803,
+    variant_id=None,
+    sub_total="3799.99",
+):
+    product = {
+        "id": str(product_id),
+        "name": "Relógio",
+        "quantity": str(quantity),
+        "price": "3799.99",
+    }
+    if variant_id is not None:
+        product["variant_id"] = str(variant_id)
+    return {
+        "Cart": {
+            "session_id": SESSION_32,
+            "cart_url": "https://store.test/cart?session=SECRET",
+            "sub_total": sub_total,
+            "total": sub_total,
+            "Products": [product],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_real_case_four_to_one_uses_absolute_put_and_reconciles(
+    caplog,
+):
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
+    state = {"quantity": 4}
+    calls = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            subtotal = "3799.99" if state["quantity"] == 1 else "15199.96"
+            return response(
+                request,
+                _complete_quantity_cart(state["quantity"], sub_total=subtotal),
+            )
+        assert json.loads(request.content) == {
+            "Cart": {"product_id": 803, "quantity": 1}
+        }
+        state["quantity"] = 1
+        return response(request, {"message": "Saved", "code": 200})
+
+    result = await CartResource(client(handler)).set_item_quantity(
+        SESSION_32,
+        {"product_id": 803, "quantity": 1},
+    )
+
+    assert calls == [
+        ("GET", f"/web_api/carts/{SESSION_32}/complete"),
+        ("PUT", f"/web_api/carts/{SESSION_32}"),
+        ("GET", f"/web_api/carts/{SESSION_32}/complete"),
+    ]
+    assert result["changed"] is True
+    assert result["already_satisfied"] is False
+    assert result["item"] == {
+        "product_id": 803,
+        "variant_id": None,
+        "quantity": 1,
+    }
+    assert result["cart"]["items"][0]["quantity"] == 1
+    assert result["cart"]["sub_total"] == 3799.99
+    assert result["cart"]["total"] == 3799.99
+    assert "[tray.cart.quantity.inspect]" in caplog.text
+    assert "[tray.cart.quantity.update]" in caplog.text
+    assert "[tray.cart.quantity.reconcile]" in caplog.text
+    assert "status_code=200" in caplog.text
+    assert "session_hash=" in caplog.text
+    assert SESSION_32 not in caplog.text
+    assert "https://store.test/cart" not in caplog.text
+    assert "access_token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_one_to_one_is_idempotent_and_never_puts():
+    calls = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        calls.append(request.method)
+        assert request.method == "GET"
+        return response(request, _complete_quantity_cart(1))
+
+    result = await CartResource(client(handler)).set_item_quantity(
+        SESSION_32,
+        {"product_id": 803, "quantity": 1},
+    )
+
+    assert calls == ["GET"]
+    assert result["changed"] is False
+    assert result["already_satisfied"] is True
+    assert result["item"]["quantity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_one_to_two_sets_two_instead_of_adding_two():
+    state = {"quantity": 1}
+    sent_quantities = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            return response(request, _complete_quantity_cart(state["quantity"]))
+        sent = json.loads(request.content)["Cart"]
+        sent_quantities.append(sent["quantity"])
+        state["quantity"] = sent["quantity"]
+        return response(request, {"message": "Saved", "code": 200})
+
+    result = await CartResource(client(handler)).set_item_quantity(
+        SESSION_32,
+        {"product_id": 803, "quantity": 2},
+    )
+
+    assert sent_quantities == [2]
+    assert result["item"]["quantity"] == 2
+    assert result["cart"]["items"][0]["quantity"] == 2
+    assert result["cart"]["items"][0]["quantity"] != 3
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_matches_exact_variant_without_confusing_siblings():
+    quantities = {986: 4, 987: 4}
+    put_payloads = []
+
+    def cart_body():
+        return {
+            "Cart": {
+                "session_id": SESSION_32,
+                "Products": [
+                    {
+                        "id": "803",
+                        "variant_id": str(variant_id),
+                        "quantity": str(quantity),
+                        "price": "3799.99",
+                    }
+                    for variant_id, quantity in quantities.items()
+                ],
+            }
+        }
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            return response(request, cart_body())
+        sent = json.loads(request.content)["Cart"]
+        put_payloads.append(sent)
+        quantities[sent["variant_id"]] = sent["quantity"]
+        return response(request, {"message": "Saved", "code": 200})
+
+    result = await CartResource(client(handler)).set_item_quantity(
+        SESSION_32,
+        {"product_id": 803, "variant_id": 987, "quantity": 1},
+    )
+
+    assert put_payloads == [
+        {"product_id": 803, "variant_id": 987, "quantity": 1}
+    ]
+    final = {
+        int(item["variant_id"]): item["quantity"]
+        for item in result["cart"]["items"]
+    }
+    assert final == {986: 4, 987: 1}
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_missing_item_returns_factual_error_without_put():
+    put_calls = 0
+
+    async def handler(request):
+        nonlocal put_calls
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "PUT":
+            put_calls += 1
+        return response(request, _complete_quantity_cart(1, product_id=804))
+
+    with pytest.raises(TrayValidationError, match="cart_item_not_found"):
+        await CartResource(client(handler)).set_item_quantity(
+            SESSION_32,
+            {"product_id": 803, "quantity": 1},
+        )
+
+    assert put_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_timeout_already_applied_reconciles_without_second_put():
+    state = {"quantity": 4}
+    put_calls = 0
+
+    async def handler(request):
+        nonlocal put_calls
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            return response(request, _complete_quantity_cart(state["quantity"]))
+        put_calls += 1
+        state["quantity"] = 1
+        raise httpx.ReadTimeout("timed out after apply", request=request)
+
+    result = await CartResource(client(handler)).set_item_quantity(
+        SESSION_32,
+        {"product_id": 803, "quantity": 1},
+    )
+
+    assert put_calls == 1
+    assert result["success"] is True
+    assert result["cart"]["items"][0]["quantity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_timeout_not_applied_retries_once_then_reconciles():
+    state = {"quantity": 4}
+    put_calls = 0
+    get_calls = 0
+
+    async def handler(request):
+        nonlocal put_calls, get_calls
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            get_calls += 1
+            return response(request, _complete_quantity_cart(state["quantity"]))
+        put_calls += 1
+        if put_calls == 1:
+            raise httpx.ReadTimeout("timed out before apply", request=request)
+        state["quantity"] = 1
+        return response(request, {"message": "Saved", "code": 200})
+
+    result = await CartResource(client(handler)).set_item_quantity(
+        SESSION_32,
+        {"product_id": 803, "quantity": 1},
+    )
+
+    assert put_calls == 2
+    assert get_calls == 3
+    assert result["cart"]["items"][0]["quantity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cart_quantity_401_refreshes_reconciles_then_retries_once():
+    state = {"quantity": 4}
+    put_calls = 0
+    refreshes = 0
+
+    async def handler(request):
+        nonlocal put_calls, refreshes
+        if request.url.path.endswith("/auth"):
+            if request.method == "GET":
+                refreshes += 1
+            token = "new-token" if request.method == "GET" else "old-token"
+            return response(
+                request,
+                {
+                    "access_token": token,
+                    "refresh_token": "refresh",
+                    "store_id": "687890",
+                },
+            )
+        if request.method == "GET":
+            return response(request, _complete_quantity_cart(state["quantity"]))
+        put_calls += 1
+        if put_calls == 1:
+            assert request.url.params["access_token"] == "old-token"
+            return response(request, {"code": 401, "message": "Unauthorized"}, 401)
+        assert request.url.params["access_token"] == "new-token"
+        state["quantity"] = 1
+        return response(request, {"message": "Saved", "code": 200})
+
+    result = await CartResource(client(handler)).set_item_quantity(
+        SESSION_32,
+        {"product_id": 803, "quantity": 1},
+    )
+
+    assert put_calls == 2
+    assert refreshes == 1
+    assert result["cart"]["items"][0]["quantity"] == 1
+
+
+def test_cart_quantity_route_has_dedicated_schema_without_price(monkeypatch, caplog):
+    configure(monkeypatch)
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
+
+    class RecordingQuantityResource:
+        def __init__(self):
+            self.calls = []
+
+        async def set_item_quantity(self, session_id, payload):
+            self.calls.append((session_id, payload))
+            return {
+                "success": True,
+                "changed": False,
+                "already_satisfied": True,
+                "session_id": session_id,
+                "item": {**payload, "variant_id": payload.get("variant_id")},
+                "cart": {"items": []},
+            }
+
+    resource = RecordingQuantityResource()
+    monkeypatch.setattr(main, "_cart_resource", lambda: resource)
+    api = TestClient(main.app)
+    path = f"/internal/carts/{SESSION_32}/items"
+    headers = {"Authorization": "Bearer adapter-token"}
+    body = {"product_id": 803, "variant_id": None, "quantity": 1}
+
+    assert api.put(path, json=body).status_code == 401
+    assert api.put(path, json=body, headers=headers).status_code == 200
+    assert resource.calls == [
+        (SESSION_32, {"product_id": 803, "quantity": 1})
+    ]
+    for invalid in (
+        {**body, "quantity": 0},
+        {**body, "product_id": 0},
+        {**body, "variant_id": 0},
+        {**body, "price": "3799.99"},
+    ):
+        assert api.put(path, json=invalid, headers=headers).status_code == 422
+    assert len(resource.calls) == 1
+    assert "[tray.cart.quantity.update]" in caplog.text
+    routes = [
+        route
+        for route in main.app.routes
+        if getattr(route, "path", "") == "/internal/carts/{session_id}/items"
+    ]
+    assert len(routes) == 1
+    assert routes[0].methods == {"PUT"}

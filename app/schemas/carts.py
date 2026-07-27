@@ -34,3 +34,14 @@ class CartCreateRequest(BaseModel):
         if value.lower() in {"none", "null"}:
             raise ValueError("must be a valid session identifier")
         return value
+
+
+class CartItemQuantityUpdateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    product_id: int = Field(gt=0)
+    variant_id: int | None = Field(default=None, gt=0)
+    quantity: int = Field(ge=1)

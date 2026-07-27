@@ -44,7 +44,7 @@ python -m compileall app tests
 | Produtos | `GET /internal/products`, `GET /internal/products/{id}`, `GET /internal/products/{id}/stock` |
 | Variantes de produto | `GET /internal/products/variants`, `GET /internal/products/variants/{id}` |
 | Categorias | `GET /internal/categories`, `GET /internal/categories/{id}`, `GET /internal/categories/tree/{id}` |
-| Carrinhos | `POST /internal/carts`, `GET /internal/carts/{session_id}` |
+| Carrinhos | `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `GET /internal/carts/{session_id}` |
 | Carrinho completo | `GET /internal/carts/{session_id}/complete` |
 | Opções de pagamento | `GET /internal/payments/options?cart_session_id=...` |
 | Métodos de pagamento ativos | `GET /internal/payments/methods/active` |
@@ -61,7 +61,7 @@ python -m compileall app tests
 | Cupons | `GET /internal/coupons`, `GET /internal/coupons/{id}`, além das seis rotas de relacionamentos por tipo |
 | Usuários | `GET /internal/users` |
 
-As rotas internas são majoritariamente de leitura. As mutações expostas nesta etapa são `POST /internal/carts`, `POST /internal/orders` e o PUT restrito aos campos de envio/rastreio. As demais operações POST/PUT/DELETE disponíveis nos resources/client continuam sem rotas de execução automática.
+As rotas internas são majoritariamente de leitura. As mutações expostas nesta etapa são `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `POST /internal/orders` e o PUT restrito aos campos de envio/rastreio. As demais operações POST/PUT/DELETE disponíveis nos resources/client continuam sem rotas de execução automática.
 
 ## APIs Tray implementadas
 
@@ -71,7 +71,7 @@ As rotas internas são majoritariamente de leitura. As mutações expostas nesta
 | Products | `/products`, `/products/{id}` | GET, POST, PUT, DELETE |
 | Product variants | `/products/variants/`, `/products/variants/{id}` | GET |
 | Categories | `/categories/`, `/categories/{id}`, `/categories/tree/{id}` | GET |
-| Carts | `/carts`, `/carts/{session_id}` | POST, GET |
+| Carts | `/carts`, `/carts/{session_id}` | POST, GET e PUT de quantidade absoluta |
 | Complete cart | `/carts/{session_id}/complete` | GET |
 | Payment options | `/payments/options` | GET |
 | Active payment methods | `/payments/methods/1/active` | GET |
@@ -107,6 +107,8 @@ As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/he
 `POST /internal/carts` recebe `product_id`, `quantity`, `price`, `session_id` obrigatório e, opcionalmente, `variant_id`. O campo `price` permanece no contrato interno por compatibilidade, mas não é encaminhado à Tray: a loja determina o preço a partir do produto e da variante. O Adapter envia JSON com wrapper `Cart`, IDs e quantidade numéricos, sem calcular preço ou escolher variante. Quando há variante, confirma antes que ela pertence ao produto. Em uma resposta 401, atualiza o token e reconcilia a sessão; em timeout, conexão interrompida ou resposta ambígua, reconcilia antes de qualquer nova tentativa. O POST é repetido no máximo uma vez e somente quando o item ainda não existe.
 
 `GET /internal/carts/{session_id}` consulta o carrinho simples. `GET /internal/carts/{session_id}/complete` preserva itens, preços, quantidades, estoque, disponibilidade, imagens e totais informados pela Tray.
+
+`PUT /internal/carts/{session_id}/items` define a quantidade absoluta de um item já existente, identificado pelo par factual `product_id` e `variant_id`. O body recebe somente esses identificadores e `quantity >= 1`; não recebe preço. Antes do PUT em `/carts/{session_id}`, o Adapter consulta o carrinho completo e não escreve quando a quantidade já está correta. Depois de qualquer PUT bem-sucedido ou ambíguo, consulta novamente o carrinho completo e só confirma sucesso quando a quantidade factual coincide. A operação não adiciona item ausente e não remove item com `quantity=0`.
 
 Antes do primeiro item, o NSAgent cria e persiste uma `session_id` estável de carrinho. Todos os itens do mesmo carrinho reutilizam essa sessão. O Adapter exige e apenas transporta esse identificador; ele não gera sessões nem combina itens localmente.
 

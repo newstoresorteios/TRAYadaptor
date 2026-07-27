@@ -43,6 +43,173 @@ class CartResource:
             return await self._recover_after_ambiguous_failure(payload, cart_payload)
         return _normalize_create_response(response, recovered=False)
 
+    async def set_item_quantity(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            normalized_session_id = _session_identifier(session_id)
+            tray_payload = _tray_quantity_payload(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TrayValidationError("cart_quantity_payload_invalid") from exc
+
+        requested = tray_payload["Cart"]
+        cart = (await self.complete(normalized_session_id))["cart"]
+        item = _find_cart_item(cart, requested)
+        actual_quantity = _item_quantity(item)
+        requested_quantity = requested["quantity"]
+        _log_quantity_inspect(
+            normalized_session_id,
+            requested,
+            actual_quantity,
+            changed=actual_quantity != requested_quantity,
+        )
+        if item is None:
+            raise TrayValidationError("cart_item_not_found")
+        if actual_quantity == requested_quantity:
+            return _quantity_update_result(
+                normalized_session_id,
+                requested,
+                cart,
+                changed=False,
+                already_satisfied=True,
+            )
+
+        try:
+            await self._put_item_quantity(
+                normalized_session_id,
+                tray_payload,
+                actual_quantity=actual_quantity,
+            )
+        except TrayAPIError as exc:
+            if _is_auth_failure(exc):
+                await self.client.auth.refresh()
+            elif not _is_ambiguous_api_failure(exc):
+                raise
+            return await self._reconcile_then_retry_quantity(
+                normalized_session_id,
+                tray_payload,
+            )
+        except TrayConnectionError:
+            return await self._reconcile_then_retry_quantity(
+                normalized_session_id,
+                tray_payload,
+            )
+
+        return await self._confirm_item_quantity(
+            normalized_session_id,
+            requested,
+        )
+
+    async def _put_item_quantity(
+        self,
+        session_id: str,
+        tray_payload: dict[str, Any],
+        *,
+        actual_quantity: int | None,
+    ) -> Any:
+        requested = tray_payload["Cart"]
+        return await self.client.request(
+            "PUT",
+            f"/carts/{session_id}",
+            json=tray_payload,
+            retry_on_auth_failure=False,
+            follow_redirects=False,
+            reject_redirects=True,
+            request_observer=lambda: _log_quantity_update(
+                session_id,
+                requested,
+                actual_quantity,
+                status_code=None,
+            ),
+            response_observer=lambda diagnostics: _log_quantity_update(
+                session_id,
+                requested,
+                actual_quantity,
+                status_code=diagnostics.get("status_code"),
+            ),
+        )
+
+    async def _reconcile_then_retry_quantity(
+        self,
+        session_id: str,
+        tray_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        requested = tray_payload["Cart"]
+        cart, item, actual_quantity = await self._reconcile_item_quantity(
+            session_id,
+            requested,
+        )
+        if item is not None and actual_quantity == requested["quantity"]:
+            return _quantity_update_result(
+                session_id,
+                requested,
+                cart,
+                changed=True,
+                already_satisfied=False,
+            )
+        if item is None:
+            raise TrayValidationError("cart_item_not_found")
+
+        try:
+            await self._put_item_quantity(
+                session_id,
+                tray_payload,
+                actual_quantity=actual_quantity,
+            )
+        except (TrayAPIError, TrayConnectionError) as retry_error:
+            cart, item, actual_quantity = await self._reconcile_item_quantity(
+                session_id,
+                requested,
+            )
+            if item is not None and actual_quantity == requested["quantity"]:
+                return _quantity_update_result(
+                    session_id,
+                    requested,
+                    cart,
+                    changed=True,
+                    already_satisfied=False,
+                )
+            raise retry_error
+
+        return await self._confirm_item_quantity(session_id, requested)
+
+    async def _confirm_item_quantity(
+        self,
+        session_id: str,
+        requested: dict[str, Any],
+    ) -> dict[str, Any]:
+        cart, item, actual_quantity = await self._reconcile_item_quantity(
+            session_id,
+            requested,
+        )
+        if item is None or actual_quantity != requested["quantity"]:
+            raise TrayConnectionError("Cart quantity could not be confirmed")
+        return _quantity_update_result(
+            session_id,
+            requested,
+            cart,
+            changed=True,
+            already_satisfied=False,
+        )
+
+    async def _reconcile_item_quantity(
+        self,
+        session_id: str,
+        requested: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int | None]:
+        cart = (await self.complete(session_id))["cart"]
+        item = _find_cart_item(cart, requested)
+        actual_quantity = _item_quantity(item)
+        _log_quantity_reconcile(
+            session_id,
+            requested,
+            actual_quantity,
+            changed=True,
+        )
+        return cart, item, actual_quantity
+
     async def _validate_variant_product(self, cart: dict[str, Any]) -> None:
         variant_id = cart.get("variant_id")
         if variant_id is None:
@@ -231,6 +398,56 @@ def _tray_cart_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {"Cart": cart}
 
 
+def _tray_quantity_payload(
+    payload: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise TypeError("payload must be a dictionary")
+    if set(payload) - {"product_id", "variant_id", "quantity"}:
+        raise ValueError("quantity payload contains unsupported fields")
+    product_id = _numeric_identifier(payload["product_id"])
+    quantity = payload["quantity"]
+    if not _quantity_is_valid(quantity):
+        raise ValueError("quantity must be an integer greater than zero")
+
+    cart = {
+        "product_id": product_id,
+        "quantity": quantity,
+    }
+    if payload.get("variant_id") is not None:
+        cart["variant_id"] = _numeric_identifier(payload["variant_id"])
+    return {"Cart": cart}
+
+
+def _quantity_update_result(
+    session_id: str,
+    requested: dict[str, Any],
+    cart: dict[str, Any],
+    *,
+    changed: bool,
+    already_satisfied: bool,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "changed": changed,
+        "already_satisfied": already_satisfied,
+        "session_id": session_id,
+        "item": {
+            "product_id": requested["product_id"],
+            "variant_id": requested.get("variant_id"),
+            "quantity": requested["quantity"],
+        },
+        "cart": cart,
+    }
+
+
+def _item_quantity(item: dict[str, Any] | None) -> int | None:
+    if not isinstance(item, dict):
+        return None
+    value = item.get("quantity")
+    return value if _quantity_is_valid(value) else None
+
+
 def _numeric_identifier(value: Any) -> int:
     text = str(value).strip()
     if not text.isascii() or not text.isdecimal() or int(text) < 1:
@@ -298,8 +515,74 @@ def _log_cart_request(cart: dict[str, Any]) -> None:
     )
 
 
+def _log_quantity_inspect(
+    session_id: str,
+    requested: dict[str, Any],
+    actual_quantity: int | None,
+    *,
+    changed: bool,
+) -> None:
+    logger.info(
+        "[tray.cart.quantity.inspect] session_hash=%s product_id=%s "
+        "variant_id_present=%s actual_quantity=%s requested_quantity=%s "
+        "changed=%s status_code=none",
+        _session_hash(session_id),
+        requested["product_id"],
+        _boolean("variant_id" in requested),
+        actual_quantity if actual_quantity is not None else "none",
+        requested["quantity"],
+        _boolean(changed),
+    )
+
+
+def _log_quantity_update(
+    session_id: str,
+    requested: dict[str, Any],
+    actual_quantity: int | None,
+    *,
+    status_code: int | None,
+) -> None:
+    logger.info(
+        "[tray.cart.quantity.update] session_hash=%s product_id=%s "
+        "variant_id_present=%s actual_quantity=%s requested_quantity=%s "
+        "changed=true status_code=%s",
+        _session_hash(session_id),
+        requested["product_id"],
+        _boolean("variant_id" in requested),
+        actual_quantity if actual_quantity is not None else "none",
+        requested["quantity"],
+        status_code if status_code is not None else "none",
+    )
+
+
+def _log_quantity_reconcile(
+    session_id: str,
+    requested: dict[str, Any],
+    actual_quantity: int | None,
+    *,
+    changed: bool,
+) -> None:
+    logger.info(
+        "[tray.cart.quantity.reconcile] session_hash=%s product_id=%s "
+        "variant_id_present=%s actual_quantity=%s requested_quantity=%s "
+        "changed=%s status_code=none",
+        _session_hash(session_id),
+        requested["product_id"],
+        _boolean("variant_id" in requested),
+        actual_quantity if actual_quantity is not None else "none",
+        requested["quantity"],
+        _boolean(changed),
+    )
+
+
 def _is_auth_failure(exc: TrayAPIError) -> bool:
     return exc.status_code == 401 or str(exc.diagnostics.get("error_code", "")) == "401"
+
+
+def _is_ambiguous_api_failure(exc: TrayAPIError) -> bool:
+    return bool(exc.diagnostics.get("invalid_response")) or (
+        exc.status_code is not None and 300 <= exc.status_code < 400
+    )
 
 
 def _variant_identity(value: Any) -> str | None:
@@ -308,7 +591,10 @@ def _variant_identity(value: Any) -> str | None:
     return str(value).strip()
 
 
-def _cart_contains_product(cart: dict[str, Any], payload: dict[str, Any]) -> bool:
+def _find_cart_item(
+    cart: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
     requested_product = str(payload["product_id"]).strip()
     requested_variant = _variant_identity(payload.get("variant_id"))
     candidates = cart.get("items", [])
@@ -322,8 +608,12 @@ def _cart_contains_product(cart: dict[str, Any], payload: dict[str, Any]) -> boo
         if str(item.get("product_id", "")).strip() != requested_product:
             continue
         if _variant_identity(item.get("variant_id")) == requested_variant:
-            return True
-    return False
+            return item
+    return None
+
+
+def _cart_contains_product(cart: dict[str, Any], payload: dict[str, Any]) -> bool:
+    return _find_cart_item(cart, payload) is not None
 
 
 def _normalize_reconciliation_cart(response: Any) -> dict[str, Any]:
