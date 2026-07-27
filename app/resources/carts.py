@@ -122,13 +122,12 @@ class CartResource:
                 session_id,
                 requested,
                 actual_quantity,
-                status_code=None,
             ),
             response_observer=lambda diagnostics: _log_quantity_update(
                 session_id,
                 requested,
                 actual_quantity,
-                status_code=diagnostics.get("status_code"),
+                diagnostics=diagnostics,
             ),
         )
 
@@ -537,19 +536,40 @@ def _log_quantity_update(
     requested: dict[str, Any],
     actual_quantity: int | None,
     *,
-    status_code: int | None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> None:
+    diagnostics = diagnostics or {}
     logger.info(
-        "[tray.cart.quantity.update] session_hash=%s product_id=%s "
+        "[tray.cart.quantity.update] operation=set_item_quantity "
+        "session_hash=%s product_id=%s "
         "variant_id_present=%s actual_quantity=%s requested_quantity=%s "
-        "changed=true status_code=%s",
+        "changed=true status_code=%s final_url_path=%s "
+        "error_code=%s error_name=%s error_causes=%s",
         _session_hash(session_id),
         requested["product_id"],
         _boolean("variant_id" in requested),
         actual_quantity if actual_quantity is not None else "none",
         requested["quantity"],
-        status_code if status_code is not None else "none",
+        diagnostics.get("status_code", "none"),
+        _safe_cart_session_path(diagnostics.get("final_url_path")),
+        diagnostics.get("error_code", "none"),
+        diagnostics.get("error_name", "none"),
+        diagnostics.get("error_causes", []),
     )
+
+
+def _safe_cart_session_path(value: Any) -> str:
+    if not isinstance(value, str):
+        return "none"
+    segments = value.split("/")
+    try:
+        cart_index = segments.index("carts")
+    except ValueError:
+        return "other"
+    if cart_index + 1 >= len(segments):
+        return "/".join(segments[: cart_index + 1])
+    segments[cart_index + 1] = "{session_id}"
+    return "/".join(segments[: cart_index + 2])
 
 
 def _log_quantity_reconcile(

@@ -991,11 +991,13 @@ def _complete_quantity_cart(
 
 
 @pytest.mark.asyncio
-async def test_cart_quantity_real_case_four_to_one_uses_absolute_put_and_reconciles(
+@pytest.mark.parametrize("initial_quantity", [2, 4])
+async def test_cart_quantity_reduction_to_one_uses_absolute_put_and_reconciles(
     caplog,
+    initial_quantity,
 ):
     caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
-    state = {"quantity": 4}
+    state = {"quantity": initial_quantity}
     calls = []
 
     async def handler(request):
@@ -1041,6 +1043,8 @@ async def test_cart_quantity_real_case_four_to_one_uses_absolute_put_and_reconci
     assert "[tray.cart.quantity.update]" in caplog.text
     assert "[tray.cart.quantity.reconcile]" in caplog.text
     assert "status_code=200" in caplog.text
+    assert "operation=set_item_quantity" in caplog.text
+    assert "final_url_path=/web_api/carts/{session_id}" in caplog.text
     assert "session_hash=" in caplog.text
     assert SESSION_32 not in caplog.text
     assert "https://store.test/cart" not in caplog.text
@@ -1272,6 +1276,71 @@ async def test_cart_quantity_401_refreshes_reconciles_then_retries_once():
     assert put_calls == 2
     assert refreshes == 1
     assert result["cart"]["items"][0]["quantity"] == 1
+
+
+def test_cart_quantity_upstream_error_preserves_diagnostics_and_safe_path(
+    monkeypatch,
+    caplog,
+):
+    configure(monkeypatch)
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            return response(request, _complete_quantity_cart(2))
+        return response(
+            request,
+            {
+                "code": 400,
+                "name": "Bad Request",
+                "type": "validation",
+                "field": "quantity",
+                "causes": [
+                    {"field": "quantity", "message": "quantity is invalid"}
+                ],
+                "message": "invalid quantity",
+            },
+            400,
+        )
+
+    monkeypatch.setattr(
+        main,
+        "_cart_resource",
+        lambda: CartResource(client(handler)),
+    )
+    result = TestClient(main.app).put(
+        f"/internal/carts/{SESSION_32}/items",
+        json={"product_id": 803, "quantity": 1},
+        headers={"Authorization": "Bearer adapter-token"},
+    )
+
+    assert result.status_code == 400
+    assert result.json() == {
+        "success": False,
+        "error": "tray_api_error",
+        "status_code": 400,
+        "tray_error_code": 400,
+        "tray_error_type": "validation",
+        "tray_error_field": "quantity",
+        "tray_error_fields": ["quantity"],
+        "tray_error_message": "invalid quantity",
+        "tray_error_name": "Bad Request",
+        "tray_error_causes": [
+            {"field": "quantity", "message": "quantity is invalid"}
+        ],
+    }
+    assert "status_code=400" in caplog.text
+    assert "final_url_path=/web_api/carts/{session_id}" in caplog.text
+    assert "error_code=400" in caplog.text
+    assert "error_name=Bad Request" in caplog.text
+    assert "quantity is invalid" in caplog.text
+    assert SESSION_32 not in caplog.text
+    assert "access_token" not in caplog.text
 
 
 def test_cart_quantity_route_has_dedicated_schema_without_price(monkeypatch, caplog):
