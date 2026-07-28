@@ -354,6 +354,11 @@ async def internal_cart(session_id: str):
     return await _cart_resource().get(session_id)
 
 
+@app.delete("/internal/carts/{session_id}", dependencies=[Depends(require_internal_token)])
+async def internal_cart_delete(session_id: str):
+    return await _cart_resource().delete(session_id)
+
+
 @app.get("/internal/payments/options", dependencies=[Depends(require_internal_token)])
 async def internal_payment_options(
     cart_session_id: str | None = Query(default=None, min_length=1),
@@ -414,6 +419,11 @@ async def internal_order_shipping_update(
         order_id,
         payload.model_dump(exclude_none=True),
     )
+
+
+@app.put("/internal/orders/{order_id}/cancel", dependencies=[Depends(require_internal_token)])
+async def internal_order_cancel(order_id: int):
+    return await _order_resource().cancel(order_id)
 
 
 @app.get("/internal/orders/{order_id}", dependencies=[Depends(require_internal_token)])

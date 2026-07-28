@@ -810,3 +810,61 @@ def test_order_upstream_400_propagates_birth_date_field_and_causes_without_maski
         {"field": "birth_date", "message": "This field can't be left blank."},
     ]
     assert body["tray_error_message"] == "This field can't be left blank."
+
+
+@pytest.mark.asyncio
+async def test_order_cancel_sends_upstream_put_and_returns_order_id():
+    requests = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        requests.append(request)
+        return response(request, {"message": "Cancelled", "code": 200})
+
+    result = await OrderResource(client(handler)).cancel(123)
+
+    assert result == {"success": True, "order_id": 123}
+    assert requests[0].method == "PUT"
+    assert requests[0].url.path == "/web_api/orders/cancel/123"
+
+
+@pytest.mark.asyncio
+async def test_order_cancel_propagates_upstream_400_with_diagnostics():
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        return response(
+            request,
+            {"code": 400, "name": "Bad Request", "message": "already cancelled"},
+            400,
+        )
+
+    with pytest.raises(TrayAPIError) as error:
+        await OrderResource(client(handler)).cancel(123)
+    assert error.value.status_code == 400
+    assert error.value.diagnostics["error_name"] == "Bad Request"
+    assert error.value.diagnostics["error_message"] == "already cancelled"
+
+
+def test_order_cancel_route_requires_bearer_token(monkeypatch):
+    configure(monkeypatch)
+
+    class RecordingResource:
+        async def cancel(self, order_id):
+            return {"success": True, "order_id": order_id}
+
+    monkeypatch.setattr(main, "_order_resource", lambda: RecordingResource())
+    api = TestClient(main.app)
+    path = "/internal/orders/123/cancel"
+    assert api.put(path).status_code == 401
+    assert api.put(path, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    result = api.put(path, headers={"Authorization": "Bearer adapter-token"})
+    assert result.status_code == 200
+    assert result.json() == {"success": True, "order_id": 123}

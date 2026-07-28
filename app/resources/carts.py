@@ -377,6 +377,24 @@ class CartResource:
             )
             raise
 
+    async def delete(self, session_id: str):
+        try:
+            response = await self.client.request(
+                "DELETE", f"/carts/{session_id}"
+            )
+        except TrayError as exc:
+            logger.info(
+                "operation=delete success=false status_code=%s error_type=%s",
+                getattr(exc, "status_code", None),
+                type(exc).__name__,
+            )
+            raise
+        logger.info(
+            "operation=delete success=true session_hash=%s",
+            _session_hash(session_id),
+        )
+        return {"success": True, "session_id": session_id}
+
 
 def _tray_cart_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     product_id = _numeric_identifier(payload["product_id"])

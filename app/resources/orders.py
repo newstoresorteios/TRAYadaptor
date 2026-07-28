@@ -229,6 +229,20 @@ class OrderResource:
             "payment_capability": capability,
         }
 
+    async def cancel(self, order_id: int):
+        try:
+            await self.client.request("PUT", f"/orders/cancel/{order_id}")
+        except TrayError as exc:
+            logger.info(
+                "operation=cancel success=false order_id=%s status_code=%s error_type=%s",
+                order_id,
+                getattr(exc, "status_code", None),
+                type(exc).__name__,
+            )
+            raise
+        logger.info("operation=cancel success=true order_id=%s", order_id)
+        return {"success": True, "order_id": order_id}
+
     async def update_shipping(
         self,
         order_id: int,

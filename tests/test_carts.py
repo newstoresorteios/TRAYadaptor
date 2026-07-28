@@ -1455,3 +1455,64 @@ def test_cart_quantity_route_has_dedicated_schema_without_price(monkeypatch, cap
     ]
     assert len(routes) == 1
     assert routes[0].methods == {"PUT"}
+
+
+@pytest.mark.asyncio
+async def test_cart_delete_sends_upstream_delete_and_returns_session_id():
+    requests = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        requests.append(request)
+        return response(request, {"message": "Deleted", "code": 200})
+
+    result = await CartResource(client(handler)).delete(SESSION_32)
+
+    assert result == {"success": True, "session_id": SESSION_32}
+    assert requests[0].method == "DELETE"
+    assert requests[0].url.path == "/web_api/carts/" + SESSION_32
+    assert "access_token" in requests[0].url.params
+
+
+@pytest.mark.asyncio
+async def test_cart_delete_propagates_upstream_404():
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(request, {"message": "Not Found"}, 404)
+
+    with pytest.raises(TrayAPIError) as error:
+        await CartResource(client(handler)).delete(SESSION_32)
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cart_delete_never_logs_full_session_id(caplog):
+    caplog.set_level("INFO", logger="uvicorn.error.tray.cart")
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(request, {"message": "Deleted", "code": 200})
+
+    await CartResource(client(handler)).delete(SESSION_32)
+    assert "operation=delete success=true" in caplog.text
+    assert SESSION_32 not in caplog.text
+
+
+def test_cart_delete_route_requires_bearer_token(monkeypatch):
+    configure(monkeypatch)
+
+    class RecordingResource:
+        async def delete(self, session_id):
+            return {"success": True, "session_id": session_id}
+
+    monkeypatch.setattr(main, "_cart_resource", lambda: RecordingResource())
+    api = TestClient(main.app)
+    path = f"/internal/carts/{SESSION_32}"
+    assert api.delete(path).status_code == 401
+    assert api.delete(path, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    result = api.delete(path, headers={"Authorization": "Bearer adapter-token"})
+    assert result.status_code == 200
+    assert result.json() == {"success": True, "session_id": SESSION_32}
