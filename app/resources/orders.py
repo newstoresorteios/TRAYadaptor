@@ -454,14 +454,17 @@ def _normalize_created(response: Any, *, reconciled: bool) -> dict[str, Any]:
     logger.info(
         "[tray.order.create.response_shape] response_type=%s top_level_keys=%s "
         "nested_order_keys=%s message_present=%s code_present=%s "
-        "id_present=%s order_id_present=%s",
+        "id_present=%s raw_order_id_key_present=%s "
+        "raw_order_id_nonempty=%s normalized_order_id_present=%s",
         shape["response_type"],
         shape["top_level_keys"],
         shape["nested_order_keys"],
         str(shape["message_present"]).lower(),
         str(shape["code_present"]).lower(),
         str(shape["id_present"]).lower(),
-        str(shape["order_id_present"]).lower(),
+        str(shape["raw_order_id_key_present"]).lower(),
+        str(shape["raw_order_id_nonempty"]).lower(),
+        str(shape["normalized_order_id_present"]).lower(),
     )
     logger.info(
         "[tray.order.create.response] success=true order_id_present=%s reconciled=%s",
@@ -482,7 +485,12 @@ def _create_response_shape(response: Any) -> dict[str, Any]:
         "message_present": root.get("message") is not None,
         "code_present": root.get("code") is not None,
         "id_present": root.get("id") is not None,
-        "order_id_present": extract_order_id(response) is not None,
+        "raw_order_id_key_present": "order_id" in root,
+        "raw_order_id_nonempty": (
+            root.get("order_id") is not None
+            and str(root["order_id"]).strip() != ""
+        ),
+        "normalized_order_id_present": extract_order_id(response) is not None,
     }
 
 

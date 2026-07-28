@@ -8,7 +8,11 @@ from fastapi.testclient import TestClient
 from app import main
 from app.config import Settings
 from app.exceptions import TrayAPIError, TrayConnectionError
-from app.normalizers.order import normalize_order, normalize_order_complete
+from app.normalizers.order import (
+    normalize_order,
+    normalize_order_complete,
+    normalize_order_create,
+)
 from app.resources.orders import DEFAULT_ORDER_POINT_SALE, OrderResource
 from app.schemas.orders import OrderCreateRequest
 from app.tray_auth import TrayAuth
@@ -126,6 +130,19 @@ def test_order_status_preserves_original_and_adds_technical_group(status, group)
     assert result == {"status": status, "status_group": group}
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_order_id"),
+    [
+        ({"order_id": "987", "id": "123"}, 987),
+        ({"id": "123", "Order": {"order_id": "987", "id": "456"}}, 123),
+        ({"Order": {"order_id": "987", "id": "123"}}, 987),
+        ({"order_id": "", "id": "123"}, 123),
+    ],
+)
+def test_order_create_id_precedence(payload, expected_order_id):
+    assert normalize_order_create(payload)["order_id"] == expected_order_id
+
+
 @pytest.mark.asyncio
 async def test_order_create_wraps_customer_address_products_and_omits_optionals():
     requests = []
@@ -149,6 +166,7 @@ async def test_order_create_wraps_customer_address_products_and_omits_optionals(
     tray_payload = json.loads(requests[0].content)
     assert requests[0].method == "POST"
     assert requests[0].url.path == "/web_api/orders"
+    assert len(requests) == 1
     assert tray_payload == {
         "Order": {
             "point_sale": DEFAULT_ORDER_POINT_SALE,
@@ -242,6 +260,117 @@ async def test_order_create_accepts_nested_order_id_without_reconciliation():
     assert result["reconciled"] is False
     assert posts == 1
     assert gets == 0
+
+
+@pytest.mark.asyncio
+async def test_order_create_accepts_real_top_level_order_id_without_reconciliation(
+    caplog,
+):
+    posts = 0
+    gets = 0
+    caplog.set_level("INFO", logger="uvicorn.error.tray.order")
+
+    async def handler(request):
+        nonlocal posts, gets
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            gets += 1
+            return response(request, {"Orders": []})
+        posts += 1
+        return response(
+            request,
+            {
+                "code": 201,
+                "customer_id": "456",
+                "message": "Created",
+                "order_id": "987",
+            },
+            201,
+        )
+
+    result = await OrderResource(client(handler)).create(order_payload())
+    assert result == {
+        "success": True,
+        "order_id": 987,
+        "code": 201,
+        "message": "Created",
+        "reconciled": False,
+    }
+    assert posts == 1
+    assert gets == 0
+    assert "raw_order_id_key_present=true" in caplog.text
+    assert "raw_order_id_nonempty=true" in caplog.text
+    assert "normalized_order_id_present=true" in caplog.text
+    assert "reconciliation_started=true" not in caplog.text
+    assert "987" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_order_create_accepts_numeric_top_level_order_id():
+    posts = 0
+    gets = 0
+
+    async def handler(request):
+        nonlocal posts, gets
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            gets += 1
+            return response(request, {"Orders": []})
+        posts += 1
+        return response(
+            request,
+            {
+                "code": 201,
+                "customer_id": 456,
+                "message": "Created",
+                "order_id": 987,
+            },
+            201,
+        )
+
+    result = await OrderResource(client(handler)).create(order_payload())
+    assert result["order_id"] == 987
+    assert result["reconciled"] is False
+    assert posts == 1
+    assert gets == 0
+
+
+@pytest.mark.asyncio
+async def test_order_create_never_uses_customer_id_as_order_id():
+    posts = 0
+    gets = 0
+
+    async def handler(request):
+        nonlocal posts, gets
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            gets += 1
+            return response(request, {"Orders": []})
+        posts += 1
+        return response(
+            request,
+            {"code": 201, "customer_id": "456", "message": "Created"},
+            201,
+        )
+
+    result = await OrderResource(client(handler)).create(order_payload())
+    assert result["order_id"] is None
+    assert result["creation_ambiguous"] is True
+    assert result["reconciled"] is False
+    assert posts == 1
+    assert gets == 1
 
 
 @pytest.mark.asyncio

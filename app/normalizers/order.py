@@ -43,6 +43,17 @@ def _identifier(value: Any) -> Any:
     return int(text) if text.isascii() and text.isdecimal() else value
 
 
+def _first_present(*values: Any) -> Any:
+    return next(
+        (
+            value
+            for value in values
+            if value is not None and str(value).strip() != ""
+        ),
+        None,
+    )
+
+
 def _integer(value: Any) -> int | None:
     if value is None or value == "":
         return None
@@ -156,7 +167,14 @@ def normalize_order_list(
 def extract_order_id(payload: Any) -> Any:
     order = _unwrap(payload, "Order", "order")
     root = payload if isinstance(payload, dict) else {}
-    return _identifier(root.get("id", order.get("id")))
+    return _identifier(
+        _first_present(
+            root.get("order_id"),
+            root.get("id"),
+            order.get("order_id"),
+            order.get("id"),
+        )
+    )
 
 
 def normalize_order_create(payload: Any) -> dict[str, Any]:
