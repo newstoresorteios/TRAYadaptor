@@ -9,11 +9,7 @@ from app import main
 from app.config import Settings
 from app.exceptions import TrayAPIError, TrayConnectionError
 from app.normalizers.order import normalize_order, normalize_order_complete
-from app.resources.orders import (
-    DEFAULT_CUSTOMER_BIRTH_DATE,
-    DEFAULT_ORDER_POINT_SALE,
-    OrderResource,
-)
+from app.resources.orders import DEFAULT_ORDER_POINT_SALE, OrderResource
 from app.schemas.orders import OrderCreateRequest
 from app.tray_auth import TrayAuth
 from app.tray_client import TrayClient
@@ -53,6 +49,11 @@ def configure(monkeypatch):
         "TRAY_ADAPTER_TOKEN": "adapter-token",
     }.items():
         monkeypatch.setenv(key, value)
+
+
+@pytest.fixture(autouse=True)
+def configured_birth_date_fallback(monkeypatch):
+    configure(monkeypatch)
 
 
 def order_payload(*, variant=False, multiple=False):
@@ -161,7 +162,7 @@ async def test_order_create_wraps_customer_address_products_and_omits_optionals(
                 "cpf": "00000000000",
                 "email": "email@example.com",
                 "phone": "14999999999",
-                "birth_date": DEFAULT_CUSTOMER_BIRTH_DATE,
+                "birth_date": "1900-01-01",
                 "CustomerAddress": [
                     {
                         "address": "Rua Teste",
@@ -219,7 +220,7 @@ async def test_order_create_preserves_birth_date_when_provided():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blank_value", ["", "   "])
-async def test_order_create_falls_back_to_placeholder_for_blank_birth_date(
+async def test_order_create_falls_back_to_configured_birth_date_for_blank_value(
     blank_value,
 ):
     sent = []
@@ -237,7 +238,25 @@ async def test_order_create_falls_back_to_placeholder_for_blank_birth_date(
     payload["customer"]["birth_date"] = blank_value
     validated = OrderCreateRequest.model_validate(payload).model_dump(exclude_none=True)
     await OrderResource(client(handler)).create(validated)
-    assert sent[0]["Order"]["Customer"]["birth_date"] == DEFAULT_CUSTOMER_BIRTH_DATE
+    assert sent[0]["Order"]["Customer"]["birth_date"] == "1900-01-01"
+
+
+@pytest.mark.asyncio
+async def test_order_create_uses_updated_birth_date_fallback(monkeypatch):
+    sent = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        sent.append(json.loads(request.content))
+        return response(request, {"message": "Created", "id": "129", "code": 201}, 201)
+
+    monkeypatch.setenv("CUSTOMER_BIRTH_DATE_FALLBACK", "01/01/1900")
+    await OrderResource(client(handler)).create(order_payload())
+    assert sent[0]["Order"]["Customer"]["birth_date"] == "01/01/1900"
 
 
 @pytest.mark.asyncio
@@ -256,12 +275,15 @@ async def test_order_create_never_logs_birth_date(caplog):
     payload["customer"]["birth_date"] = "1990-05-17"
     await OrderResource(client(handler)).create(payload)
     assert "customer_birth_date_defaulted=false" in caplog.text
+    assert "customer_birth_date_length=10" in caplog.text
     assert "1990-05-17" not in caplog.text
 
     caplog.clear()
     payload = order_payload()
     await OrderResource(client(handler)).create(payload)
     assert "customer_birth_date_defaulted=true" in caplog.text
+    assert "customer_birth_date_length=10" in caplog.text
+    assert "1900-01-01" not in caplog.text
 
 
 @pytest.mark.asyncio

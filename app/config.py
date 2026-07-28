@@ -13,6 +13,7 @@ class Settings:
     tray_coupon_valid_days: int = 180
     tray_store_code: str = ""
     tray_adapter_token: str = ""
+    customer_birth_date_fallback: str = "1900-01-01"
 
 
 def get_settings() -> Settings:
@@ -42,4 +43,7 @@ def get_settings() -> Settings:
         tray_coupon_valid_days=coupon_days,
         tray_store_code=values["TRAY_STORE_CODE"],
         tray_adapter_token=values["TRAY_ADAPTER_TOKEN"],
+        customer_birth_date_fallback=os.getenv(
+            "CUSTOMER_BIRTH_DATE_FALLBACK", "1900-01-01"
+        ),
     )

@@ -4,9 +4,11 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from ..config import get_settings
 from ..exceptions import (
     TrayAPIError,
     TrayConnectionError,
+    TrayConfigurationError,
     TrayError,
     TrayValidationError,
 )
@@ -19,7 +21,7 @@ from ..normalizers.order import (
 )
 
 DEFAULT_ORDER_POINT_SALE = "PARTICULAR"
-DEFAULT_CUSTOMER_BIRTH_DATE = "0000-00-00"
+DEFAULT_CUSTOMER_BIRTH_DATE = "1900-01-01"
 
 logger = logging.getLogger("uvicorn.error.tray.order")
 logger.setLevel(logging.INFO)
@@ -34,7 +36,7 @@ class OrderResource:
             tray_payload = _tray_order_payload(payload)
         except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             raise TrayValidationError("order_payload_invalid") from exc
-        _log_create_request(payload)
+        _log_create_request(payload, tray_payload)
         try:
             response = await self._post_order(tray_payload, attempt="initial")
         except TrayAPIError as exc:
@@ -288,7 +290,13 @@ def _tray_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         if payload["customer"].get(key) is not None
     }
-    customer.setdefault("birth_date", DEFAULT_CUSTOMER_BIRTH_DATE)
+    if "birth_date" not in customer:
+        try:
+            customer.setdefault(
+                "birth_date", get_settings().customer_birth_date_fallback
+            )
+        except TrayConfigurationError:
+            customer.setdefault("birth_date", DEFAULT_CUSTOMER_BIRTH_DATE)
     address = {
         key: payload["address"][key]
         for key in (
@@ -376,11 +384,14 @@ def _safe_log_value(value: Any) -> str:
     return text
 
 
-def _log_create_request(payload: dict[str, Any]) -> None:
+def _log_create_request(
+    payload: dict[str, Any], tray_payload: dict[str, Any]
+) -> None:
     logger.info(
         "[tray.order.create.request] session_length=%s session_hash=%s "
         "product_count=%s customer_cpf_present=%s address_present=%s "
-        "zipcode_prefix=%s variant_count=%s customer_birth_date_defaulted=%s",
+        "zipcode_prefix=%s variant_count=%s customer_birth_date_defaulted=%s "
+        "customer_birth_date_length=%s",
         len(payload["session_id"]),
         _session_hash(payload["session_id"]),
         len(payload["products"]),
@@ -396,6 +407,7 @@ def _log_create_request(payload: dict[str, Any]) -> None:
             )
         ),
         str(payload["customer"].get("birth_date") is None).lower(),
+        len(tray_payload["Order"]["Customer"]["birth_date"]),
     )
 
 
