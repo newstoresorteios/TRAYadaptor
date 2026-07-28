@@ -195,6 +195,7 @@ async def test_order_create_wraps_customer_address_products_and_omits_optionals(
         "order_id": 123,
         "code": 201,
         "message": "Created",
+        "reconciled": False,
     }
 
 
@@ -216,6 +217,126 @@ async def test_order_create_preserves_birth_date_when_provided():
     validated = OrderCreateRequest.model_validate(payload).model_dump(exclude_none=True)
     await OrderResource(client(handler)).create(validated)
     assert sent[0]["Order"]["Customer"]["birth_date"] == "1990-05-17"
+
+
+@pytest.mark.asyncio
+async def test_order_create_accepts_nested_order_id_without_reconciliation():
+    posts = 0
+    gets = 0
+
+    async def handler(request):
+        nonlocal posts, gets
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            gets += 1
+            return response(request, {"Orders": []})
+        posts += 1
+        return response(request, {"Order": {"id": "123"}}, 201)
+
+    result = await OrderResource(client(handler)).create(order_payload())
+    assert result["order_id"] == 123
+    assert result["reconciled"] is False
+    assert posts == 1
+    assert gets == 0
+
+
+@pytest.mark.asyncio
+async def test_order_create_201_without_id_reconciles_without_second_post(caplog):
+    posts = 0
+    gets = 0
+    caplog.set_level("INFO", logger="uvicorn.error.tray.order")
+
+    async def handler(request):
+        nonlocal posts, gets
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            gets += 1
+            return response(
+                request,
+                {"Orders": [{"Order": {"id": "987", "session_id": SESSION_ID}}]},
+            )
+        posts += 1
+        return response(request, {"message": "Created", "code": 201}, 201)
+
+    result = await OrderResource(client(handler)).create(order_payload())
+    assert result["success"] is True
+    assert result["order_id"] == 987
+    assert result["reconciled"] is True
+    assert posts == 1
+    assert gets == 1
+    assert "response_shape" in caplog.text
+    assert "reconciliation_started=true" in caplog.text
+    assert "[tray.order.create.reconcile] found=true order_id_present=true" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_order_create_201_without_id_returns_ambiguous_without_second_post():
+    posts = 0
+    gets = 0
+
+    async def handler(request):
+        nonlocal posts, gets
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            gets += 1
+            return response(request, {"Orders": []})
+        posts += 1
+        return response(request, {"message": "Created", "code": 201}, 201)
+
+    result = await OrderResource(client(handler)).create(order_payload())
+    assert result == {
+        "success": False,
+        "order_id": None,
+        "reconciled": False,
+        "creation_ambiguous": True,
+    }
+    assert posts == 1
+    assert gets == 1
+
+
+@pytest.mark.asyncio
+async def test_order_create_201_without_id_does_not_choose_ambiguous_session_match():
+    posts = 0
+    gets = 0
+
+    async def handler(request):
+        nonlocal posts, gets
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        if request.method == "GET":
+            gets += 1
+            return response(
+                request,
+                {
+                    "Orders": [
+                        {"Order": {"id": "987", "session_id": SESSION_ID}},
+                        {"Order": {"id": "988", "session_id": SESSION_ID}},
+                    ]
+                },
+            )
+        posts += 1
+        return response(request, {"message": "Created", "code": 201}, 201)
+
+    result = await OrderResource(client(handler)).create(order_payload())
+    assert result["creation_ambiguous"] is True
+    assert result["order_id"] is None
+    assert posts == 1
+    assert gets == 1
 
 
 @pytest.mark.asyncio

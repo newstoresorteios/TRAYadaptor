@@ -14,6 +14,7 @@ from ..exceptions import (
 )
 from ..identifiers import normalize_optional_variant_id
 from ..normalizers.order import (
+    extract_order_id,
     normalize_order,
     normalize_order_complete,
     normalize_order_create,
@@ -61,7 +62,10 @@ class OrderResource:
                 tray_payload,
                 reason="ambiguous_transport",
             )
-        return _normalize_created(response, reconciled=False)
+        normalized = _normalize_created(response, reconciled=False)
+        if normalized["order_id"] is not None:
+            return normalized
+        return await self._reconcile_created_without_id(payload["session_id"])
 
     async def _post_order(
         self,
@@ -145,6 +149,32 @@ class OrderResource:
         )
         raise TrayConnectionError("Order creation outcome is ambiguous")
 
+    async def _reconcile_created_without_id(
+        self,
+        session_id: str,
+    ) -> dict[str, Any]:
+        logger.info(
+            "[tray.order.create.response] order_id_present=false "
+            "reconciliation_started=true"
+        )
+        existing = await self._find_by_session(session_id)
+        if existing is not None:
+            logger.info(
+                "[tray.order.create.reconcile] found=true order_id_present=true"
+            )
+            result = _normalize_reconciled(existing)
+            logger.info("[tray.order.create.result] success=true reconciled=true")
+            return result
+        logger.info(
+            "[tray.order.create.reconcile] found=false creation_ambiguous=true"
+        )
+        return {
+            "success": False,
+            "order_id": None,
+            "reconciled": False,
+            "creation_ambiguous": True,
+        }
+
     async def _find_by_session(self, session_id: str) -> dict[str, Any] | None:
         payload = await self.client.request(
             "GET",
@@ -152,12 +182,18 @@ class OrderResource:
             params={"session_id": session_id},
         )
         orders, _ = normalize_order_list(payload)
-        for order in orders:
-            if str(order.get("session_id", "")).strip() == session_id:
-                return order
-        for order in orders:
-            if order.get("session_id") in (None, ""):
-                return order
+        matches = [
+            order
+            for order in orders
+            if str(order.get("session_id", "")).strip() == session_id
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        logger.info(
+            "[tray.order.reconcile] status=%s candidate_count=%s",
+            "ambiguous" if matches else "order_not_found",
+            len(matches),
+        )
         return None
 
     async def list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -413,12 +449,60 @@ def _log_create_request(
 
 def _normalize_created(response: Any, *, reconciled: bool) -> dict[str, Any]:
     normalized = normalize_order_create(response)
+    normalized["reconciled"] = reconciled
+    shape = _create_response_shape(response)
     logger.info(
-        "[tray.order.create.response] success=true order_id=%s reconciled=%s",
-        normalized.get("order_id"),
+        "[tray.order.create.response_shape] response_type=%s top_level_keys=%s "
+        "nested_order_keys=%s message_present=%s code_present=%s "
+        "id_present=%s order_id_present=%s",
+        shape["response_type"],
+        shape["top_level_keys"],
+        shape["nested_order_keys"],
+        str(shape["message_present"]).lower(),
+        str(shape["code_present"]).lower(),
+        str(shape["id_present"]).lower(),
+        str(shape["order_id_present"]).lower(),
+    )
+    logger.info(
+        "[tray.order.create.response] success=true order_id_present=%s reconciled=%s",
+        str(normalized["order_id"] is not None).lower(),
         str(reconciled).lower(),
     )
     return normalized
+
+
+def _create_response_shape(response: Any) -> dict[str, Any]:
+    root = response if isinstance(response, dict) else {}
+    order = root.get("Order", root.get("order", {}))
+    order = order if isinstance(order, dict) else {}
+    return {
+        "response_type": type(response).__name__,
+        "top_level_keys": _safe_response_keys(root),
+        "nested_order_keys": _safe_response_keys(order),
+        "message_present": root.get("message") is not None,
+        "code_present": root.get("code") is not None,
+        "id_present": root.get("id") is not None,
+        "order_id_present": extract_order_id(response) is not None,
+    }
+
+
+def _safe_response_keys(value: dict[str, Any]) -> list[str]:
+    sensitive = {
+        "access_token",
+        "consumer_secret",
+        "cpf",
+        "email",
+        "name",
+        "phone",
+        "cellphone",
+        "address",
+        "session_id",
+    }
+    return sorted(
+        key
+        for key in value
+        if isinstance(key, str) and key.lower() not in sensitive
+    )
 
 
 def _normalize_reconciled(order: dict[str, Any]) -> dict[str, Any]:

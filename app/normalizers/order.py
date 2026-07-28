@@ -153,15 +153,20 @@ def normalize_order_list(
     return [normalize_order(value) for value in values], paging
 
 
+def extract_order_id(payload: Any) -> Any:
+    order = _unwrap(payload, "Order", "order")
+    root = payload if isinstance(payload, dict) else {}
+    return _identifier(root.get("id", order.get("id")))
+
+
 def normalize_order_create(payload: Any) -> dict[str, Any]:
     order = _unwrap(payload, "Order", "order")
     root = payload if isinstance(payload, dict) else {}
-    order_id = root.get("id", order.get("id"))
     code = root.get("code", order.get("code"))
     message = root.get("message", order.get("message"))
     return {
         "success": True,
-        "order_id": _identifier(order_id),
+        "order_id": extract_order_id(payload),
         "code": _integer(code),
         "message": message,
     }
