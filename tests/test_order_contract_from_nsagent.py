@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app import main
+from app.resources.orders import DEFAULT_CUSTOMER_BIRTH_DATE, _tray_order_payload
 from app.schemas.orders import OrderCreateRequest
 
 BASE: dict[str, Any] = {
@@ -79,6 +80,8 @@ ACCEPTED_CASES = {
     "complement_none": {"address.complement": None},
     "min_period_none": {"shipping.min_period": None},
     "max_period_none": {"shipping.max_period": None},
+    "birth_date_absent": {},
+    "birth_date_present": {"customer.birth_date": "1990-05-17"},
 }
 
 
@@ -109,6 +112,20 @@ def test_rejected_nsagent_payloads(overrides):
         payload = _payload(**overrides)
     with pytest.raises(ValidationError):
         OrderCreateRequest.model_validate(payload)
+
+
+def test_payload_without_birth_date_still_validates_and_defaults_upstream():
+    validated = OrderCreateRequest.model_validate(_payload())
+    tray_payload = _tray_order_payload(validated.model_dump(exclude_none=True))
+    assert tray_payload["Order"]["Customer"]["birth_date"] == DEFAULT_CUSTOMER_BIRTH_DATE
+
+
+def test_payload_with_birth_date_is_preserved_upstream():
+    validated = OrderCreateRequest.model_validate(
+        _payload(**{"customer.birth_date": "1990-05-17"})
+    )
+    tray_payload = _tray_order_payload(validated.model_dump(exclude_none=True))
+    assert tray_payload["Order"]["Customer"]["birth_date"] == "1990-05-17"
 
 
 def test_validation_handler_reports_loc_without_leaking_field_value(monkeypatch):

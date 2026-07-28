@@ -65,6 +65,15 @@ class OrderCustomer(BaseModel):
     phone: str
     rg: str | None = None
     gender: str | None = None
+    birth_date: str | None = Field(default=None, min_length=1, max_length=10)
+
+    @field_validator("birth_date", mode="before")
+    @classmethod
+    def normalize_birth_date(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     @field_validator("cpf")
     @classmethod

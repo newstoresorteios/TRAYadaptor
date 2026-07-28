@@ -19,6 +19,7 @@ from ..normalizers.order import (
 )
 
 DEFAULT_ORDER_POINT_SALE = "PARTICULAR"
+DEFAULT_CUSTOMER_BIRTH_DATE = "0000-00-00"
 
 logger = logging.getLogger("uvicorn.error.tray.order")
 logger.setLevel(logging.INFO)
@@ -267,9 +268,13 @@ def _decimal_string(value: Any) -> str:
 def _tray_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     customer = {
         key: payload["customer"][key]
-        for key in ("type", "name", "cpf", "email", "phone", "rg", "gender")
+        for key in (
+            "type", "name", "cpf", "email", "phone",
+            "rg", "gender", "birth_date",
+        )
         if payload["customer"].get(key) is not None
     }
+    customer.setdefault("birth_date", DEFAULT_CUSTOMER_BIRTH_DATE)
     address = {
         key: payload["address"][key]
         for key in (
@@ -361,7 +366,7 @@ def _log_create_request(payload: dict[str, Any]) -> None:
     logger.info(
         "[tray.order.create.request] session_length=%s session_hash=%s "
         "product_count=%s customer_cpf_present=%s address_present=%s "
-        "zipcode_prefix=%s variant_count=%s",
+        "zipcode_prefix=%s variant_count=%s customer_birth_date_defaulted=%s",
         len(payload["session_id"]),
         _session_hash(payload["session_id"]),
         len(payload["products"]),
@@ -376,6 +381,7 @@ def _log_create_request(payload: dict[str, Any]) -> None:
                 is not None
             )
         ),
+        str(payload["customer"].get("birth_date") is None).lower(),
     )
 
 

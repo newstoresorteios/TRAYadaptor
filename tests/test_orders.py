@@ -9,7 +9,12 @@ from app import main
 from app.config import Settings
 from app.exceptions import TrayAPIError, TrayConnectionError
 from app.normalizers.order import normalize_order, normalize_order_complete
-from app.resources.orders import DEFAULT_ORDER_POINT_SALE, OrderResource
+from app.resources.orders import (
+    DEFAULT_CUSTOMER_BIRTH_DATE,
+    DEFAULT_ORDER_POINT_SALE,
+    OrderResource,
+)
+from app.schemas.orders import OrderCreateRequest
 from app.tray_auth import TrayAuth
 from app.tray_client import TrayClient
 
@@ -156,6 +161,7 @@ async def test_order_create_wraps_customer_address_products_and_omits_optionals(
                 "cpf": "00000000000",
                 "email": "email@example.com",
                 "phone": "14999999999",
+                "birth_date": DEFAULT_CUSTOMER_BIRTH_DATE,
                 "CustomerAddress": [
                     {
                         "address": "Rua Teste",
@@ -189,6 +195,73 @@ async def test_order_create_wraps_customer_address_products_and_omits_optionals(
         "code": 201,
         "message": "Created",
     }
+
+
+@pytest.mark.asyncio
+async def test_order_create_preserves_birth_date_when_provided():
+    sent = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        sent.append(json.loads(request.content))
+        return response(request, {"message": "Created", "id": "126", "code": 201}, 201)
+
+    payload = order_payload()
+    payload["customer"]["birth_date"] = "1990-05-17"
+    validated = OrderCreateRequest.model_validate(payload).model_dump(exclude_none=True)
+    await OrderResource(client(handler)).create(validated)
+    assert sent[0]["Order"]["Customer"]["birth_date"] == "1990-05-17"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank_value", ["", "   "])
+async def test_order_create_falls_back_to_placeholder_for_blank_birth_date(
+    blank_value,
+):
+    sent = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        sent.append(json.loads(request.content))
+        return response(request, {"message": "Created", "id": "127", "code": 201}, 201)
+
+    payload = order_payload()
+    payload["customer"]["birth_date"] = blank_value
+    validated = OrderCreateRequest.model_validate(payload).model_dump(exclude_none=True)
+    await OrderResource(client(handler)).create(validated)
+    assert sent[0]["Order"]["Customer"]["birth_date"] == DEFAULT_CUSTOMER_BIRTH_DATE
+
+
+@pytest.mark.asyncio
+async def test_order_create_never_logs_birth_date(caplog):
+    caplog.set_level("INFO", logger="uvicorn.error.tray.order")
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        return response(request, {"message": "Created", "id": "128", "code": 201}, 201)
+
+    payload = order_payload()
+    payload["customer"]["birth_date"] = "1990-05-17"
+    await OrderResource(client(handler)).create(payload)
+    assert "customer_birth_date_defaulted=false" in caplog.text
+    assert "1990-05-17" not in caplog.text
+
+    caplog.clear()
+    payload = order_payload()
+    await OrderResource(client(handler)).create(payload)
+    assert "customer_birth_date_defaulted=true" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -687,3 +760,53 @@ def test_shipping_update_route_rejects_empty_or_unrelated_fields(monkeypatch):
         json={"total": "1.00"},
         headers=headers,
     ).status_code == 422
+
+
+def test_order_upstream_400_propagates_birth_date_field_and_causes_without_masking(
+    monkeypatch,
+):
+    configure(monkeypatch)
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        return response(
+            request,
+            {
+                "code": 400,
+                "name": "Bad Request",
+                "field": "Customer",
+                "message": "This field can't be left blank.",
+                "causes": [
+                    {"field": "Customer", "message": "This field can't be left blank."},
+                    {"field": "birth_date", "message": "This field can't be left blank."},
+                ],
+            },
+            400,
+        )
+
+    resource = OrderResource(client(handler))
+    monkeypatch.setattr(main, "_order_resource", lambda: resource)
+    api = TestClient(main.app)
+    body_payload = order_payload()
+    body_payload["shipping"]["value"] = str(body_payload["shipping"]["value"])
+    for product in body_payload["products"]:
+        product["price"] = str(product["price"])
+        product["original_price"] = str(product["original_price"])
+    result = api.post(
+        "/internal/orders",
+        json=body_payload,
+        headers={"Authorization": "Bearer adapter-token"},
+    )
+    assert result.status_code == 400
+    body = result.json()
+    assert body["tray_error_field"] == "Customer"
+    assert body["tray_error_fields"] == ["Customer", "birth_date"]
+    assert body["tray_error_causes"] == [
+        {"field": "Customer", "message": "This field can't be left blank."},
+        {"field": "birth_date", "message": "This field can't be left blank."},
+    ]
+    assert body["tray_error_message"] == "This field can't be left blank."
