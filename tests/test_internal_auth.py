@@ -64,14 +64,21 @@ def configure(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
+class SearchAwareFakeResource(FakeResource):
+    async def search_by_tokens(self, tokens, *, brand=None, limit=20, page=1):
+        return {"success": True, "paging": {"total": 0, "page": page, "limit": limit}, "products": []}
+
+
 def test_internal_routes_require_bearer_and_public_health(monkeypatch):
     configure(monkeypatch)
-    monkeypatch.setattr(main, "_resources", lambda: (FakeClient(), FakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource()))
+    monkeypatch.setattr(main, "_resources", lambda: (FakeClient(), SearchAwareFakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource()))
     client = TestClient(main.app)
     assert client.get("/health").status_code == 200
     assert client.get("/internal/products").status_code == 401
     assert client.get("/internal/products", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.get("/internal/products", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
+    assert client.get("/internal/products/search?tokens=sealander", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
+    assert client.get("/internal/products/search?tokens=sealander").status_code == 401
     assert client.get("/internal/customers").status_code == 401
     assert client.get("/internal/coupons").status_code == 401
     assert client.get("/internal/users").status_code == 401

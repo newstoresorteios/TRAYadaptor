@@ -41,7 +41,7 @@ python -m compileall app tests
 |---|---|
 | Health | `GET /health` |
 | Diagnóstico somente leitura | `GET /tray/test-auth`, `/tray/test-products`, `/tray/test-resources` |
-| Produtos | `GET /internal/products`, `GET /internal/products/{id}`, `GET /internal/products/{id}/stock` |
+| Produtos | `GET /internal/products`, `GET /internal/products/search`, `GET /internal/products/{id}`, `GET /internal/products/{id}/stock` |
 | Variantes de produto | `GET /internal/products/variants`, `GET /internal/products/variants/{id}` |
 | Categorias | `GET /internal/categories`, `GET /internal/categories/{id}`, `GET /internal/categories/tree/{id}` |
 | Carrinhos | `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `GET /internal/carts/{session_id}` |

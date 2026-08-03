@@ -28,6 +28,7 @@ from .schemas.orders import OrderCreateRequest, OrderShippingUpdateRequest
 from .schemas.shippings import ShippingQuoteRequest
 from .normalizers.common import items
 from .normalizers.product import normalize_product
+from .product_search import parse_tokens
 from .tray_auth import TrayAuth
 from .tray_client import TrayClient
 
@@ -290,6 +291,30 @@ def normalize_products(payload: Any) -> list[dict[str, Any]]:
 async def internal_products(request: Request):
     _, resource, *_ = _resources()
     return await resource.list(_product_params(request))
+
+
+@app.get("/internal/products/search", dependencies=[Depends(require_internal_token)])
+async def internal_products_search(
+    tokens: str = Query(...),
+    brand: str | None = Query(None),
+    limit: int = Query(20),
+    page: int = Query(1),
+):
+    parsed = parse_tokens(tokens)
+    if not parsed:
+        raise HTTPException(status_code=400, detail="tokens must not be empty")
+    if not 1 <= limit <= 20:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 20")
+    if page < 1:
+        raise HTTPException(status_code=422, detail="page must be >= 1")
+    brand_value = brand.strip() if isinstance(brand, str) and brand.strip() else None
+    _, resource, *_ = _resources()
+    return await resource.search_by_tokens(
+        parsed,
+        brand=brand_value,
+        limit=limit,
+        page=page,
+    )
 
 
 @app.get("/internal/products/variants", dependencies=[Depends(require_internal_token)])
