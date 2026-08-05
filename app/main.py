@@ -221,9 +221,17 @@ PRODUCT_FILTERS = {
     "modified", "property_name", "property_id", "property_value",
     "property_value_id", "current_price", "current_price_range",
 }
-CUSTOMER_FILTERS = {"id", "name", "email", "cpf", "cnpj", "created", "modified", "attrs", "limit", "page", "sort"}
+CUSTOMER_FILTERS = {
+    "id", "name", "email", "cpf", "cnpj", "created", "modified",
+    "attrs", "limit", "page", "sort",
+    "createdStart", "createdEnd", "lastModifiedStart", "lastModifiedEnd",
+}
 ORDER_FILTERS = {
     "id", "status", "customer_id", "session_id", "limit", "page", "sort",
+    "date", "created", "modified",
+    "createdStart", "createdEnd",
+    "lastModifiedStart", "lastModifiedEnd",
+    "paymentDateStart", "paymentDateEnd",
 }
 
 

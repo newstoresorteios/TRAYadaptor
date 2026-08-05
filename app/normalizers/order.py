@@ -137,6 +137,10 @@ def normalize_order(payload: Any) -> dict[str, Any]:
     for key in ("shipment_value", "total"):
         if order.get(key) is not None:
             result[key] = _money(order[key])
+    for key in ("date", "created", "modified", "payment_date"):
+        parsed = _optional_date(order.get(key))
+        if parsed is not None:
+            result[key] = parsed
     for key in ("has_payment", "has_shipment", "has_invoice"):
         if order.get(key) is not None:
             result[key] = _boolean(order[key])
