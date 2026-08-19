@@ -124,3 +124,28 @@ def test_static_variant_and_category_tree_routes_are_not_captured(monkeypatch):
     assert variants.calls[0] == ("list", {"product_id": "123", "limit": 20})
     assert variants.calls[1] == ("detail", "900")
     assert categories.calls == [("tree", "10")]
+
+
+def test_internal_categories_forwards_name_id_and_parent_id(monkeypatch):
+    configure(monkeypatch)
+    categories = RecordingCategoryResource()
+    monkeypatch.setattr(main, "_category_resource", lambda: categories)
+    client = TestClient(main.app)
+    headers = {"Authorization": "Bearer adapter-token"}
+    response = client.get(
+        "/internal/categories?name=pronta%20entrega&id=403&parent_id=0&limit=20&page=1",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert categories.calls == [
+        (
+            "list",
+            {
+                "name": "pronta entrega",
+                "id": "403",
+                "parent_id": "0",
+                "limit": 20,
+                "page": "1",
+            },
+        )
+    ]

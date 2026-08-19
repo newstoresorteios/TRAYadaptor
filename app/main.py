@@ -258,6 +258,9 @@ def _product_params(request: Request) -> dict[str, Any]:
     return values
 
 
+CATEGORY_FILTERS = {"attrs", "limit", "page", "sort", "name", "id", "parent_id"}
+
+
 def _catalog_params(request: Request, allowed: set[str]) -> dict[str, Any]:
     values = {
         key: value
@@ -348,7 +351,7 @@ async def internal_product_stock(product_id: str):
 
 @app.get("/internal/categories", dependencies=[Depends(require_internal_token)])
 async def internal_categories(request: Request):
-    return await _category_resource().list(_catalog_params(request, {"attrs", "limit", "page", "sort"}))
+    return await _category_resource().list(_catalog_params(request, CATEGORY_FILTERS))
 
 
 @app.get("/internal/categories/tree/{category_id}", dependencies=[Depends(require_internal_token)])
