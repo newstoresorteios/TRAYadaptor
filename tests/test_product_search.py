@@ -146,7 +146,7 @@ def test_paginate_products_builds_coherent_paging():
         "page": 1,
         "limit": 2,
         "offset": 0,
-        "maxLimit": 20,
+        "maxLimit": 50,
     }
     page2 = paginate_products(products, limit=2, page=2)
     assert [item["id"] for item in page2["products"]] == ["3"]
@@ -242,7 +242,7 @@ def test_internal_products_search_route_contract(monkeypatch):
     }]
 
     assert client.get(
-        "/internal/products/search?tokens=sealander&limit=21",
+        "/internal/products/search?tokens=sealander&limit=51",
         headers=headers,
     ).status_code == 422
     assert client.get(

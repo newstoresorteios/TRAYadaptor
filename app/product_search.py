@@ -65,7 +65,7 @@ def paginate_products(
             "page": page,
             "limit": limit,
             "offset": offset,
-            "maxLimit": 20,
+            "maxLimit": 50,
         },
         "products": ordered[offset : offset + limit],
     }

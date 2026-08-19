@@ -311,8 +311,8 @@ async def internal_products_search(
     parsed = parse_tokens(tokens)
     if not parsed:
         raise HTTPException(status_code=400, detail="tokens must not be empty")
-    if not 1 <= limit <= 20:
-        raise HTTPException(status_code=422, detail="limit must be between 1 and 20")
+    if not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
     if page < 1:
         raise HTTPException(status_code=422, detail="page must be >= 1")
     brand_value = brand.strip() if isinstance(brand, str) and brand.strip() else None
