@@ -182,11 +182,13 @@ async def test_search_by_tokens_filters_brand_pool_with_and_semantics():
 
     assert [item["id"] for item in result["products"]] == ["20"]
     assert result["paging"]["total"] == 1
-    assert calls == [{
+    assert {
         "brand": "Christopher Ward",
+        "name": "sealander rosa automatico",
         "limit": 50,
         "page": 1,
-    }]
+    } in calls
+    assert all(params.get("name") for params in calls)
 
 
 def test_internal_products_search_route_contract(monkeypatch):

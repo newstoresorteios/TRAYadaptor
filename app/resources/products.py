@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from .common import Resource
@@ -11,6 +12,9 @@ class ProductResource(Resource):
     # Tray list pages used as candidate pool for local AND/ILIKE filtering.
     _SEARCH_TRAY_LIMIT = 50
     _SEARCH_MAX_PAGES = 40
+    _SEARCH_NAME_PAGES = 3
+    _SEARCH_BRAND_PAGES = 4
+    _SEARCH_FETCH_CONCURRENCY = 4
 
     async def get_product_stock(self, product_id):
         result = await self.get(product_id)
@@ -43,32 +47,81 @@ class ProductResource(Resource):
     ) -> list[dict[str, Any]]:
         seen: set[str] = set()
         candidates: list[dict[str, Any]] = []
+        lock = asyncio.Lock()
+        sem = asyncio.Semaphore(self._SEARCH_FETCH_CONCURRENCY)
 
         async def absorb(params: dict[str, Any]) -> list[dict[str, Any]]:
-            result = await self.list(params)
+            async with sem:
+                result = await self.list(params)
             page_items = result.get("products") or []
-            for product in page_items:
-                if not isinstance(product, dict):
-                    continue
-                product_id = str(product.get("id") or "")
-                if not product_id or product_id in seen:
-                    continue
-                seen.add(product_id)
-                candidates.append(product)
+            async with lock:
+                for product in page_items:
+                    if not isinstance(product, dict):
+                        continue
+                    product_id = str(product.get("id") or "")
+                    if not product_id or product_id in seen:
+                        continue
+                    seen.add(product_id)
+                    candidates.append(product)
             return page_items
 
+        async def absorb_many(param_list: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+            if not param_list:
+                return []
+            rows = await asyncio.gather(
+                *[absorb(params) for params in param_list],
+                return_exceptions=True,
+            )
+            out: list[list[dict[str, Any]]] = []
+            for row in rows:
+                if isinstance(row, Exception):
+                    out.append([])
+                    continue
+                out.append(row if isinstance(row, list) else [])
+            return out
+
         if brand:
-            for tray_page in range(1, self._SEARCH_MAX_PAGES + 1):
-                page_items = await absorb({
-                    "brand": brand,
-                    "limit": self._SEARCH_TRAY_LIMIT,
-                    "page": tray_page,
-                })
-                if len(page_items) < self._SEARCH_TRAY_LIMIT:
-                    break
+            if tokens and len(tokens) >= 2:
+                names = (" ".join(tokens[:3]), tokens[0])
+                first_pages = await absorb_many(
+                    [
+                        {
+                            "brand": brand,
+                            "name": name,
+                            "limit": self._SEARCH_TRAY_LIMIT,
+                            "page": 1,
+                        }
+                        for name in names
+                    ]
+                )
+                extra_params: list[dict[str, Any]] = []
+                for name, page_items in zip(names, first_pages):
+                    if len(page_items) >= self._SEARCH_TRAY_LIMIT:
+                        extra_params.extend(
+                            {
+                                "brand": brand,
+                                "name": name,
+                                "limit": self._SEARCH_TRAY_LIMIT,
+                                "page": tray_page,
+                            }
+                            for tray_page in range(2, self._SEARCH_NAME_PAGES + 1)
+                        )
+                if extra_params:
+                    await absorb_many(extra_params)
+                if candidates:
+                    return candidates
+            await absorb_many(
+                [
+                    {
+                        "brand": brand,
+                        "limit": self._SEARCH_TRAY_LIMIT,
+                        "page": tray_page,
+                    }
+                    for tray_page in range(1, self._SEARCH_BRAND_PAGES + 1)
+                ]
+            )
             return candidates
 
-        # Without brand, seed from name probes (Tray name filter is imperfect).
         probes: list[str] = []
         joined = " ".join(tokens)
         if joined:
@@ -76,13 +129,28 @@ class ProductResource(Resource):
         for token in tokens:
             if token not in probes:
                 probes.append(token)
-        for name in probes:
-            for tray_page in range(1, min(3, self._SEARCH_MAX_PAGES) + 1):
-                page_items = await absorb({
+        first_pages = await absorb_many(
+            [
+                {
                     "name": name,
                     "limit": self._SEARCH_TRAY_LIMIT,
-                    "page": tray_page,
-                })
-                if len(page_items) < self._SEARCH_TRAY_LIMIT:
-                    break
+                    "page": 1,
+                }
+                for name in probes
+            ]
+        )
+        extra_params = []
+        max_name_pages = min(3, self._SEARCH_MAX_PAGES)
+        for name, page_items in zip(probes, first_pages):
+            if len(page_items) >= self._SEARCH_TRAY_LIMIT:
+                extra_params.extend(
+                    {
+                        "name": name,
+                        "limit": self._SEARCH_TRAY_LIMIT,
+                        "page": tray_page,
+                    }
+                    for tray_page in range(2, max_name_pages + 1)
+                )
+        if extra_params:
+            await absorb_many(extra_params)
         return candidates
