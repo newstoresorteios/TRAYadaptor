@@ -13,7 +13,7 @@ class ProductResource(Resource):
     _SEARCH_TRAY_LIMIT = 50
     _SEARCH_MAX_PAGES = 40
     _SEARCH_NAME_PAGES = 3
-    _SEARCH_BRAND_PAGES = 4
+    _SEARCH_BRAND_PAGES = 12
     _SEARCH_FETCH_CONCURRENCY = 4
 
     async def get_product_stock(self, product_id):
