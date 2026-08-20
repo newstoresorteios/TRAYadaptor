@@ -189,7 +189,7 @@ async def request_validation_handler(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "tray-adapter"}
+    return {"status": "ok", "service": "tray-adapter", "build": "wake-2026-08-20"}
 
 
 @app.get("/tray/test-auth")
