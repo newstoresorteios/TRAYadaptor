@@ -202,7 +202,56 @@ async def test_search_by_tokens_filters_brand_pool_with_and_semantics():
         "limit": 50,
         "page": 1,
     } in calls
+    assert {
+        "brand": "Christopher Ward",
+        "name": "rosa",
+        "limit": 50,
+        "page": 1,
+    } in calls
     assert all(params.get("name") for params in calls)
+
+
+@pytest.mark.asyncio
+async def test_search_by_tokens_probes_last_token_so_rocks_is_not_lost():
+    from app.resources.products import ProductResource
+
+    rocks = {
+        "id": "40",
+        "name": "Relógio Christopher Ward C63 Sealander Rocks Automático C63-36A3H1-S00A0-B1",
+        "brand": "Christopher Ward",
+        "model": "C63 Sealander Rocks",
+        "reference": "C63-36A3H1-S00A0-B1",
+        "description": "",
+    }
+    seander = {
+        "id": "10",
+        "name": "Relógio Christopher Ward C63 Seander Automático Verde C63-39ADA3-S00V1-VC",
+        "brand": "Christopher Ward",
+        "model": "C63 Seander",
+        "reference": "C63-39ADA3-S00V1-VC",
+        "description": "",
+    }
+    calls = []
+    resource = ProductResource(client=None)
+
+    async def fake_list(params=None):
+        calls.append(params)
+        name = fold_text((params or {}).get("name") or "")
+        if "rocks" in name:
+            return {"success": True, "products": [rocks], "paging": {}}
+        if name.startswith("c63"):
+            return {"success": True, "products": [seander], "paging": {}}
+        return {"success": True, "products": [], "paging": {}}
+
+    resource.list = fake_list  # type: ignore[method-assign]
+    result = await resource.search_by_tokens(
+        ["c63", "sealander", "rocks"],
+        brand="Christopher Ward",
+        limit=20,
+        page=1,
+    )
+    assert [item["id"] for item in result["products"]] == ["40"]
+    assert any(fold_text((params or {}).get("name")) == "rocks" for params in calls)
 
 
 def test_internal_products_search_route_contract(monkeypatch):

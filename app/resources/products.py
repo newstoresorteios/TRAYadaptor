@@ -81,8 +81,15 @@ class ProductResource(Resource):
             return out
 
         if brand:
-            if tokens and len(tokens) >= 2:
-                names = (" ".join(tokens[:3]), tokens[0])
+            probes: list[str] = []
+            if tokens:
+                joined = " ".join(tokens[:3]).strip()
+                if joined:
+                    probes.append(joined)
+                for token in tokens:
+                    if token and token not in probes:
+                        probes.append(token)
+            if probes:
                 first_pages = await absorb_many(
                     [
                         {
@@ -91,11 +98,11 @@ class ProductResource(Resource):
                             "limit": self._SEARCH_TRAY_LIMIT,
                             "page": 1,
                         }
-                        for name in names
+                        for name in probes
                     ]
                 )
                 extra_params: list[dict[str, Any]] = []
-                for name, page_items in zip(names, first_pages):
+                for name, page_items in zip(probes, first_pages):
                     if len(page_items) >= self._SEARCH_TRAY_LIMIT:
                         extra_params.extend(
                             {
