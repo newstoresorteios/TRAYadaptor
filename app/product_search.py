@@ -35,11 +35,31 @@ def product_search_blob(product: dict[str, Any]) -> str:
     )
 
 
+# Catalog typos / marketing aliases that should still AND-match Story OCR.
+_TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
+    "sealander": ("sealander", "seander"),
+    "seander": ("sealander", "seander"),
+    "aquascaphe": ("aquascaphe", "aquascape"),
+}
+
+
+def _token_present(blob: str, token: str) -> bool:
+    key = fold_text(token)
+    if not key:
+        return False
+    if key in blob:
+        return True
+    for alias in _TOKEN_ALIASES.get(key, ()):
+        if alias in blob:
+            return True
+    return False
+
+
 def product_matches_tokens(product: dict[str, Any], tokens: list[str]) -> bool:
     if not tokens:
         return False
     blob = product_search_blob(product)
-    return all(token in blob for token in tokens)
+    return all(_token_present(blob, token) for token in tokens)
 
 
 def _product_id_sort_key(product: dict[str, Any]) -> tuple[int, int | str]:

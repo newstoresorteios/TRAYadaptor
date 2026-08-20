@@ -105,6 +105,20 @@ def _catalog():
     ]
 
 
+def test_product_matches_tokens_accepts_seander_alias_for_sealander():
+    product = {
+        "id": "10611",
+        "name": "Relógio Christopher Ward C63 Seander Automático Verde",
+        "brand": "Christopher Ward",
+        "model": "C63 Seander",
+        "reference": "",
+        "description": "",
+    }
+    assert product_matches_tokens(product, ["sealander", "verde"])
+    assert product_matches_tokens(product, ["c63", "sealander"])
+    assert not product_matches_tokens(product, ["sealander", "rocks"])
+
+
 def test_parse_tokens_trims_lowers_and_drops_empties():
     assert parse_tokens(" sealander , , Rosa ,AUTOMATICO ") == [
         "sealander",
