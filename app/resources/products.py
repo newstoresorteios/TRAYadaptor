@@ -108,8 +108,10 @@ class ProductResource(Resource):
                         )
                 if extra_params:
                     await absorb_many(extra_params)
-                if candidates:
+                if any(product_matches_tokens(product, tokens) for product in candidates):
                     return candidates
+                seen.clear()
+                candidates.clear()
             await absorb_many(
                 [
                     {
