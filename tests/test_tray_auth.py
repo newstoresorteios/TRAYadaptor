@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 
@@ -48,6 +50,31 @@ async def test_product_listing():
     auth = TrayAuth(settings(), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     products = await TrayClient(auth, auth.http_client).list_products()
     assert products["Products"]
+
+
+@pytest.mark.asyncio
+async def test_get_valid_token_single_flights_concurrent_auth():
+    auth_calls = 0
+
+    async def handler(request):
+        nonlocal auth_calls
+        if request.url.path.endswith("/auth"):
+            auth_calls += 1
+            await asyncio.sleep(0.05)
+            return response(
+                request,
+                {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
+            )
+        return response(request, {})
+
+    auth = TrayAuth(settings(), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    tokens = await asyncio.gather(
+        auth.get_valid_token(),
+        auth.get_valid_token(),
+        auth.get_valid_token(),
+    )
+    assert auth_calls == 1
+    assert all(token.access_token == "a" for token in tokens)
 
 
 def test_normalize_product():

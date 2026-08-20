@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -29,6 +30,8 @@ class TrayAuth:
         self.settings = settings
         self.http_client = http_client
         self.state: TokenState | None = None
+        # Single-flight: concurrent cold-start requests must not stampede /auth.
+        self._lock = asyncio.Lock()
 
     async def authenticate(self) -> TokenState:
         payload = {
@@ -50,34 +53,59 @@ class TrayAuth:
         }
         try:
             if self.http_client:
-                response = await self.http_client.get(f"{self.settings.tray_api_base}/auth", params=params, timeout=15.0)
+                response = await self.http_client.get(
+                    f"{self.settings.tray_api_base}/auth", params=params, timeout=15.0
+                )
             else:
                 async with httpx.AsyncClient(timeout=15.0) as client:
-                    response = await client.get(f"{self.settings.tray_api_base}/auth", params=params)
+                    response = await client.get(
+                        f"{self.settings.tray_api_base}/auth", params=params
+                    )
         except httpx.TimeoutException as exc:
             raise TrayConnectionError("Tray token refresh timed out") from exc
         except httpx.RequestError as exc:
             raise TrayConnectionError("Could not connect to Tray") from exc
         if response.is_error:
-            raise TrayAuthenticationError("Tray token refresh failed")
+            raise TrayAuthenticationError(
+                f"Tray token refresh failed status={response.status_code}"
+            )
         try:
             response = response.json()
         except ValueError as exc:
-            raise TrayAuthenticationError("Tray returned a non-JSON refresh response") from exc
+            raise TrayAuthenticationError(
+                "Tray returned a non-JSON refresh response"
+            ) from exc
         if not isinstance(response, dict):
             raise TrayAuthenticationError("Tray returned an invalid refresh response")
         self.state = self._parse_token_response(response)
         return self.state
 
     async def get_valid_token(self) -> TokenState:
-        if self.state and self.state.access_is_valid():
-            return self.state
-        if self.state and self.state.refresh_token:
-            try:
-                return await self.refresh()
-            except TrayError:
-                self.state = None
-        return await self.authenticate()
+        async with self._lock:
+            if self.state and self.state.access_is_valid():
+                return self.state
+            if self.state and self.state.refresh_token:
+                try:
+                    return await self.refresh()
+                except TrayError:
+                    self.state = None
+            # Optional bootstrap refresh token from env (survives process restart
+            # better than a one-time TRAY_CODE that Tray already consumed).
+            bootstrap = (getattr(self.settings, "tray_refresh_token", "") or "").strip()
+            if bootstrap and not self.state:
+                self.state = TokenState(
+                    access_token="",
+                    refresh_token=bootstrap,
+                    access_expires_at=None,
+                    refresh_expires_at=None,
+                    api_host=None,
+                    store_id=str(self.settings.tray_store_code),
+                )
+                try:
+                    return await self.refresh()
+                except TrayError:
+                    self.state = None
+            return await self.authenticate()
 
     async def _post_auth(self, payload: dict[str, str]) -> dict[str, Any]:
         try:
@@ -95,13 +123,19 @@ class TrayAuth:
         except httpx.RequestError as exc:
             raise TrayConnectionError("Could not connect to Tray") from exc
         if response.is_error:
-            raise TrayAuthenticationError("Tray authentication failed")
+            raise TrayAuthenticationError(
+                f"Tray authentication failed status={response.status_code}"
+            )
         try:
             body = response.json()
         except ValueError as exc:
-            raise TrayAuthenticationError("Tray returned a non-JSON authentication response") from exc
+            raise TrayAuthenticationError(
+                "Tray returned a non-JSON authentication response"
+            ) from exc
         if not isinstance(body, dict):
-            raise TrayAuthenticationError("Tray returned an invalid authentication response")
+            raise TrayAuthenticationError(
+                "Tray returned an invalid authentication response"
+            )
         return body
 
     def _parse_token_response(self, body: dict[str, Any]) -> TokenState:
@@ -109,14 +143,18 @@ class TrayAuth:
         refresh = body.get("refresh_token")
         store_id = body.get("store_id")
         if not access or not refresh:
-            raise TrayAuthenticationError("Tray authentication did not return required tokens")
+            raise TrayAuthenticationError(
+                "Tray authentication did not return required tokens"
+            )
         if store_id is None or str(store_id) != str(self.settings.tray_store_code):
             raise TrayAuthenticationError("Tray store validation failed")
         return TokenState(
             access_token=str(access),
             refresh_token=str(refresh),
             access_expires_at=_expiry(body, "expires_in", "access_token_expires_in"),
-            refresh_expires_at=_expiry(body, "refresh_expires_in", "refresh_token_expires_in"),
+            refresh_expires_at=_expiry(
+                body, "refresh_expires_in", "refresh_token_expires_in"
+            ),
             api_host=str(body["api_host"]) if body.get("api_host") else None,
             store_id=str(store_id),
         )
