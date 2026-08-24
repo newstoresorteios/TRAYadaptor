@@ -2,6 +2,7 @@ import asyncio
 from typing import Any
 
 from .common import Resource
+from ..exceptions import TrayAuthenticationError, TrayConnectionError
 from ..normalizers.product import normalize_product
 from ..product_search import paginate_products, product_matches_tokens
 
@@ -73,11 +74,25 @@ class ProductResource(Resource):
                 return_exceptions=True,
             )
             out: list[list[dict[str, Any]]] = []
+            auth_failures = 0
+            connection_failures = 0
             for row in rows:
+                if isinstance(row, TrayAuthenticationError):
+                    auth_failures += 1
+                    out.append([])
+                    continue
+                if isinstance(row, TrayConnectionError):
+                    connection_failures += 1
+                    out.append([])
+                    continue
                 if isinstance(row, Exception):
                     out.append([])
                     continue
                 out.append(row if isinstance(row, list) else [])
+            if auth_failures and auth_failures == len(rows):
+                raise TrayAuthenticationError("Tray product search auth failed")
+            if connection_failures and connection_failures == len(rows):
+                raise TrayConnectionError("Tray product search connection failed")
             return out
 
         if brand:

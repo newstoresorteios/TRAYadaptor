@@ -2,7 +2,9 @@ from typing import Any
 
 import hmac
 import logging
+from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -31,15 +33,39 @@ from .normalizers.product import normalize_product
 from .product_search import parse_tokens
 from .tray_auth import TrayAuth
 from .tray_client import TrayClient
+from .tray_token_store import ensure_token_table
 
-app = FastAPI(title="TrayAdapter")
 _tray_client: TrayClient | None = None
+_http_client: httpx.AsyncClient | None = None
+tray_logger = logging.getLogger("uvicorn.error.tray.adapter")
+tray_logger.setLevel(logging.INFO)
 cart_logger = logging.getLogger("uvicorn.error.tray.cart")
 cart_logger.setLevel(logging.INFO)
 shipping_logger = logging.getLogger("uvicorn.error.tray.shipping")
 shipping_logger.setLevel(logging.INFO)
 order_logger = logging.getLogger("uvicorn.error.tray.order")
 order_logger.setLevel(logging.INFO)
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    global _http_client, _tray_client
+    ensure_token_table()
+    _http_client = httpx.AsyncClient(
+        timeout=15.0,
+        limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
+    )
+    _tray_client = None
+    try:
+        yield
+    finally:
+        if _http_client is not None:
+            await _http_client.aclose()
+        _http_client = None
+        _tray_client = None
+
+
+app = FastAPI(title="TrayAdapter", lifespan=_lifespan)
 
 
 @app.middleware("http")
@@ -78,10 +104,10 @@ async def validation_observability(request: Request, call_next):
 
 
 def _client() -> TrayClient:
-    global _tray_client
+    global _tray_client, _http_client
     settings = get_settings()
     if _tray_client is None or _tray_client.auth.settings != settings:
-        _tray_client = TrayClient(TrayAuth(settings))
+        _tray_client = TrayClient(TrayAuth(settings, http_client=_http_client))
     return _tray_client
 
 
@@ -122,6 +148,12 @@ def require_internal_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Bearer"})
 
 
+def _log_request_path(path: str) -> str:
+    if path.startswith("/internal/carts/"):
+        return "/internal/carts/{session_id}"
+    return path
+
+
 @app.exception_handler(TrayConfigurationError)
 @app.exception_handler(TrayAuthenticationError)
 @app.exception_handler(TrayConnectionError)
@@ -133,6 +165,12 @@ async def tray_error_handler(request: Request, exc: Exception) -> JSONResponse:
     elif isinstance(exc, TrayConnectionError): code, status = "tray_connection_failed", 503
     elif isinstance(exc, TrayValidationError): code, status = str(exc), 400
     else: code, status = "tray_api_error", getattr(exc, "status_code", None) or 503
+    tray_logger.warning(
+        "tray.request_failed path=%s status=%s error=%s",
+        _log_request_path(request.url.path),
+        status,
+        code,
+    )
     content = {"success": False, "error": code}
     if isinstance(exc, TrayAPIError):
         diagnostics = exc.diagnostics
@@ -189,7 +227,28 @@ async def request_validation_handler(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "tray-adapter", "build": "auth-lock-2026-08-20"}
+    return {"status": "ok", "service": "tray-adapter", "build": "oauth-cache-2026-08-24"}
+
+
+@app.get("/health/tray")
+async def health_tray():
+    from .tray_token_store import _database_url
+
+    client = _client()
+    state = await client.auth.get_valid_token()
+    settings = get_settings()
+    return {
+        "status": "ok",
+        "store_id": state.store_id,
+        "access_valid": state.access_is_valid(),
+        "access_expires_at": (
+            state.access_expires_at.isoformat() if state.access_expires_at else None
+        ),
+        "bootstrap_refresh_configured": bool(
+            (getattr(settings, "tray_refresh_token", "") or "").strip()
+        ),
+        "database_cache_configured": bool(_database_url()),
+    }
 
 
 @app.get("/tray/test-auth")
