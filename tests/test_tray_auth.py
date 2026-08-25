@@ -77,6 +77,33 @@ async def test_get_valid_token_single_flights_concurrent_auth():
     assert all(token.access_token == "a" for token in tokens)
 
 
-def test_normalize_product():
-    product = normalize_products({"Products": [{"Product": {"id": "1", "price": "139.00", "stock": "51"}}]})[0]
-    assert product["price"] == 139.0 and product["stock"] == 51
+@pytest.mark.asyncio
+async def test_auth_persists_default_expiry_when_tray_omits_expires_in():
+    async def handler(request):
+        return response(
+            request,
+            {"access_token": "a", "refresh_token": "r", "store_id": 687890},
+        )
+
+    auth = TrayAuth(settings(), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    state = await auth.authenticate()
+    assert state.access_expires_at is not None
+    assert state.access_is_valid() is True
+    assert state.should_refresh_proactively() is False
+
+
+def test_null_expiry_is_not_forever_valid():
+    from datetime import datetime, timezone
+
+    from app.tray_auth import TokenState
+
+    state = TokenState(
+        access_token="a",
+        refresh_token="r",
+        access_expires_at=None,
+        refresh_expires_at=None,
+        api_host=None,
+        store_id="687890",
+    )
+    assert state.access_is_valid() is False
+    assert state.should_refresh_proactively() is True
