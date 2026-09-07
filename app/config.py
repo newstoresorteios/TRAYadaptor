@@ -15,6 +15,19 @@ class Settings:
     tray_adapter_token: str = ""
     tray_refresh_token: str = ""
     customer_birth_date_fallback: str = "1900-01-01"
+    tray_webhook_token: str = ""
+    tray_rate_limit_per_minute: int = 90
+    tray_rate_limit_per_day: int = 4000
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise TrayConfigurationError(f"{name} must be an integer") from exc
 
 
 def get_settings() -> Settings:
@@ -32,10 +45,7 @@ def get_settings() -> Settings:
         raise TrayConfigurationError(
             "Missing required Tray configuration: " + ", ".join(missing)
         )
-    try:
-        coupon_days = int(os.getenv("TRAY_COUPON_VALID_DAYS", "180"))
-    except ValueError as exc:
-        raise TrayConfigurationError("TRAY_COUPON_VALID_DAYS must be an integer") from exc
+    coupon_days = _int_env("TRAY_COUPON_VALID_DAYS", 180)
     return Settings(
         tray_api_base=values["TRAY_API_BASE"].rstrip("/"),
         tray_code=values["TRAY_CODE"],
@@ -48,4 +58,7 @@ def get_settings() -> Settings:
         customer_birth_date_fallback=os.getenv(
             "CUSTOMER_BIRTH_DATE_FALLBACK", "1900-01-01"
         ),
+        tray_webhook_token=(os.getenv("TRAY_WEBHOOK_TOKEN") or "").strip(),
+        tray_rate_limit_per_minute=_int_env("TRAY_RATE_LIMIT_PER_MINUTE", 90),
+        tray_rate_limit_per_day=_int_env("TRAY_RATE_LIMIT_PER_DAY", 4000),
     )

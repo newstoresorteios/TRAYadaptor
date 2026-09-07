@@ -3,7 +3,9 @@ from typing import Any
 
 from .common import Resource
 from ..exceptions import TrayAuthenticationError, TrayConnectionError
+from ..normalizers.common import normalized_list
 from ..normalizers.product import normalize_product
+from ..normalizers.property import normalize_property
 from ..product_search import paginate_products, product_matches_tokens
 
 
@@ -13,9 +15,17 @@ class ProductResource(Resource):
     # Tray list pages used as candidate pool for local AND/ILIKE filtering.
     _SEARCH_TRAY_LIMIT = 50
     _SEARCH_MAX_PAGES = 40
-    _SEARCH_NAME_PAGES = 3
-    _SEARCH_BRAND_PAGES = 12
-    _SEARCH_FETCH_CONCURRENCY = 4
+    _SEARCH_NAME_PAGES = 2
+    _SEARCH_BRAND_PAGES = 4
+    _SEARCH_FETCH_CONCURRENCY = 2
+
+    async def list_properties(self, params: dict[str, Any] | None = None):
+        payload = await self.client.request(
+            "GET", "/products/properties", params=params
+        )
+        return normalized_list(
+            payload, "Properties", "property", normalize_property, "properties"
+        )
 
     async def get_product_stock(self, product_id):
         result = await self.get(product_id)
@@ -164,7 +174,7 @@ class ProductResource(Resource):
             ]
         )
         extra_params = []
-        max_name_pages = min(3, self._SEARCH_MAX_PAGES)
+        max_name_pages = min(self._SEARCH_NAME_PAGES, self._SEARCH_MAX_PAGES)
         for name, page_items in zip(probes, first_pages):
             if len(page_items) >= self._SEARCH_TRAY_LIMIT:
                 extra_params.extend(

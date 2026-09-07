@@ -34,6 +34,12 @@ from .product_search import parse_tokens
 from .tray_auth import TrayAuth
 from .tray_client import TrayClient
 from .tray_token_store import ensure_token_table
+from .webhooks import (
+    ensure_webhook_table,
+    ingest_tray_notification,
+    list_recent_events,
+    webhook_token_matches,
+)
 
 _tray_client: TrayClient | None = None
 _http_client: httpx.AsyncClient | None = None
@@ -51,6 +57,7 @@ order_logger.setLevel(logging.INFO)
 async def _lifespan(_: FastAPI):
     global _http_client, _tray_client
     ensure_token_table()
+    ensure_webhook_table()
     _http_client = httpx.AsyncClient(
         timeout=15.0,
         limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
@@ -164,7 +171,9 @@ async def tray_error_handler(request: Request, exc: Exception) -> JSONResponse:
     elif isinstance(exc, TrayAuthenticationError): code, status = "tray_authentication_failed", 503
     elif isinstance(exc, TrayConnectionError): code, status = "tray_connection_failed", 503
     elif isinstance(exc, TrayValidationError): code, status = str(exc), 400
-    else: code, status = "tray_api_error", getattr(exc, "status_code", None) or 503
+    else:
+        status = getattr(exc, "status_code", None) or 503
+        code = "tray_rate_limited" if status == 429 else "tray_api_error"
     tray_logger.warning(
         "tray.request_failed path=%s status=%s error=%s",
         _log_request_path(request.url.path),
@@ -227,7 +236,7 @@ async def request_validation_handler(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "tray-adapter", "build": "oauth-cache-2026-08-24"}
+    return {"status": "ok", "service": "tray-adapter", "build": "quota-webhook-2026-09-06"}
 
 
 @app.get("/health/tray")
@@ -251,13 +260,13 @@ async def health_tray():
     }
 
 
-@app.get("/tray/test-auth")
+@app.get("/tray/test-auth", dependencies=[Depends(require_internal_token)])
 async def test_auth():
     state = await _client().auth.authenticate()
     return {"success": True, "authenticated": True, "store_id": state.store_id, "access_token_received": True, "refresh_token_received": True}
 
 
-@app.get("/tray/test-products")
+@app.get("/tray/test-products", dependencies=[Depends(require_internal_token)])
 async def test_products():
     client, products, *_ = _resources()
     state = await client.auth.get_valid_token()
@@ -384,6 +393,13 @@ async def internal_products_search(
         brand=brand_value,
         limit=limit,
         page=page,
+    )
+
+
+@app.get("/internal/products/properties", dependencies=[Depends(require_internal_token)])
+async def internal_product_properties(request: Request):
+    return await _resources()[1].list_properties(
+        _catalog_params(request, {"limit", "page", "sort", "id", "name"})
     )
 
 
@@ -609,7 +625,34 @@ async def internal_users(request: Request):
     return await _resources()[7].list(_params(request, {"limit", "page", "sort", "attrs"}))
 
 
-@app.get("/tray/test-resources")
+@app.post("/webhooks/tray")
+async def tray_webhook(request: Request):
+    settings = get_settings()
+    supplied = (
+        request.query_params.get("token")
+        or request.headers.get("X-Tray-Webhook-Token")
+        or ""
+    )
+    if not webhook_token_matches(str(supplied), settings.tray_webhook_token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    form = await request.form()
+    result = ingest_tray_notification(
+        seller_id=str(form.get("seller_id") or ""),
+        scope_name=str(form.get("scope_name") or ""),
+        scope_id=str(form.get("scope_id") or ""),
+        act=str(form.get("act") or ""),
+        app_code=str(form.get("app_code") or ""),
+        expected_seller_id=settings.tray_store_code,
+    )
+    return {"success": True, **result}
+
+
+@app.get("/internal/webhooks/events", dependencies=[Depends(require_internal_token)])
+async def internal_webhook_events(limit: int = Query(50, ge=1, le=100)):
+    return {"success": True, "events": list_recent_events(limit)}
+
+
+@app.get("/tray/test-resources", dependencies=[Depends(require_internal_token)])
 async def test_resources():
     client, products, brands, kits, inventory, customers, coupons, users = _resources()
     checks = {"products": (products.list, {"limit": 1}), "brands": (brands.list, {"limit": 1}), "kits": (kits.list, {"limit": 1}), "customers": (customers.list, {"limit": 1}), "coupons": (coupons.list, {"limit": 1}), "users": (users.list, {"limit": 1}), "multicd": (inventory.distribution_centers, {"limit": 1})}

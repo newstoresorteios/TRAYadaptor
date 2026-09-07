@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+import zlib
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,50 @@ def _database_url() -> str:
 
 def _store_id(settings: Any) -> str:
     return str(getattr(settings, "tray_store_code", "") or "").strip()
+
+
+def _advisory_key(store_id: str) -> int:
+    return zlib.crc32(f"tray-oauth:{store_id}".encode("utf-8"))
+
+
+@contextmanager
+def token_refresh_lock(settings: Any) -> Iterator[None]:
+    """Session-level Postgres advisory lock around token refresh.
+
+    Falls through (no lock) when DATABASE_URL is unset or the lock cannot be
+    acquired, so local/dev auth still works.
+    """
+    url = _database_url()
+    store_id = _store_id(settings)
+    conn = None
+    key = 0
+    if url and store_id:
+        try:
+            import psycopg
+
+            key = _advisory_key(store_id)
+            conn = psycopg.connect(url, connect_timeout=5)
+            conn.execute("SELECT pg_advisory_lock(%s)", (key,))
+        except Exception as exc:
+            logger.warning("tray_oauth_cache lock failed: %s", exc)
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+    try:
+        yield
+    finally:
+        if conn is not None:
+            try:
+                conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def load_token_state(settings: Any) -> dict[str, Any] | None:
@@ -30,7 +76,8 @@ def load_token_state(settings: Any) -> dict[str, Any] | None:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT access_token, refresh_token, access_expires_at
+                    SELECT access_token, refresh_token, access_expires_at,
+                           refresh_expires_at
                     FROM public.tray_oauth_cache
                     WHERE store_id = %s
                     LIMIT 1
@@ -40,13 +87,14 @@ def load_token_state(settings: Any) -> dict[str, Any] | None:
                 row = cur.fetchone()
         if not row:
             return None
-        access_token, refresh_token, access_expires_at = row
+        access_token, refresh_token, access_expires_at, refresh_expires_at = row
         if not refresh_token:
             return None
         return {
             "access_token": str(access_token or ""),
             "refresh_token": str(refresh_token or ""),
             "access_expires_at": access_expires_at,
+            "refresh_expires_at": refresh_expires_at,
         }
     except Exception as exc:
         logger.warning("tray_oauth_cache load failed: %s", exc)
@@ -59,6 +107,7 @@ def save_token_state(
     access_token: str,
     refresh_token: str,
     access_expires_at: datetime | None,
+    refresh_expires_at: datetime | None = None,
 ) -> None:
     url = _database_url()
     store_id = _store_id(settings)
@@ -77,13 +126,15 @@ def save_token_state(
                         access_token,
                         refresh_token,
                         access_expires_at,
+                        refresh_expires_at,
                         updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (store_id) DO UPDATE SET
                         access_token = EXCLUDED.access_token,
                         refresh_token = EXCLUDED.refresh_token,
                         access_expires_at = EXCLUDED.access_expires_at,
+                        refresh_expires_at = EXCLUDED.refresh_expires_at,
                         updated_at = EXCLUDED.updated_at
                     """,
                     (
@@ -91,6 +142,7 @@ def save_token_state(
                         access_token,
                         refresh_token,
                         access_expires_at,
+                        refresh_expires_at,
                         now,
                     ),
                 )
@@ -115,8 +167,15 @@ def ensure_token_table() -> None:
                         access_token text NOT NULL DEFAULT '',
                         refresh_token text NOT NULL,
                         access_expires_at timestamptz,
+                        refresh_expires_at timestamptz,
                         updated_at timestamptz NOT NULL DEFAULT now()
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE public.tray_oauth_cache
+                    ADD COLUMN IF NOT EXISTS refresh_expires_at timestamptz
                     """
                 )
             conn.commit()

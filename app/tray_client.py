@@ -5,6 +5,7 @@ import httpx
 
 from .exceptions import TrayAPIError, TrayConnectionError
 from .tray_auth import TrayAuth
+from .tray_rate_limit import acquire_tray_quota
 
 
 class TrayClient:
@@ -23,6 +24,7 @@ class TrayClient:
     ) -> Any:
         token = await self.auth.get_valid_token()
         for attempt in range(2):
+            acquire_tray_quota(self.auth.settings)
             request_params = dict(params or {})
             request_params["access_token"] = token.access_token
             if request_observer:

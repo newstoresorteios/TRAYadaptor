@@ -92,6 +92,38 @@ async def test_auth_persists_default_expiry_when_tray_omits_expires_in():
     assert state.should_refresh_proactively() is False
 
 
+@pytest.mark.asyncio
+async def test_auth_parses_date_expiration_fields_over_expires_in(monkeypatch):
+    async def handler(request):
+        return response(
+            request,
+            {
+                "access_token": "a",
+                "refresh_token": "r",
+                "store_id": 687890,
+                "expires_in": 1,
+                "date_expiration_access_token": "2099-03-02 14:58:21",
+                "date_expiration_refresh_token": "2099-06-02 14:58:21",
+            },
+        )
+
+    captured = {}
+
+    def fake_save(settings, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.tray_auth.save_token_state", fake_save)
+    auth = TrayAuth(settings(), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    state = await auth.authenticate()
+
+    assert state.access_is_valid() is True
+    assert state.access_expires_at is not None
+    assert state.access_expires_at.year == 2099
+    assert state.refresh_expires_at is not None
+    assert state.refresh_expires_at.year == 2099
+    assert captured.get("refresh_expires_at") is not None
+
+
 def test_null_expiry_is_not_forever_valid():
     from datetime import datetime, timezone
 

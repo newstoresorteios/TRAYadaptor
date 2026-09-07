@@ -7,6 +7,7 @@ class FakeResource:
     async def list(self, params=None): return {"success": True, "products": []}
     async def get(self, resource_id): return {"success": True}
     async def get_product_stock(self, product_id): return {"success": True}
+    async def list_properties(self, params=None): return {"success": True, "properties": []}
     async def distribution_centers(self, params=None): return {"success": True, "distribution_centers": []}
 
 
@@ -68,6 +69,9 @@ class SearchAwareFakeResource(FakeResource):
     async def search_by_tokens(self, tokens, *, brand=None, limit=20, page=1):
         return {"success": True, "paging": {"total": 0, "page": page, "limit": limit}, "products": []}
 
+    async def list_properties(self, params=None):
+        return {"success": True, "paging": {}, "properties": []}
+
 
 def test_internal_routes_require_bearer_and_public_health(monkeypatch):
     configure(monkeypatch)
@@ -85,7 +89,18 @@ def test_internal_routes_require_bearer_and_public_health(monkeypatch):
     assert client.get("/internal/inventory/distribution-centers").status_code == 401
     assert client.get("/internal/categories").status_code == 401
     assert client.get("/internal/products/variants").status_code == 401
-    assert client.get("/tray/test-resources").status_code == 200
+    assert client.get("/tray/test-resources").status_code == 401
+    assert client.get("/tray/test-auth").status_code == 401
+    assert client.get("/tray/test-products").status_code == 401
+    assert client.get(
+        "/tray/test-resources",
+        headers={"Authorization": "Bearer adapter-token"},
+    ).status_code == 200
+    assert client.get(
+        "/internal/products/properties",
+        headers={"Authorization": "Bearer adapter-token"},
+    ).status_code == 200
+    assert client.get("/internal/webhooks/events").status_code == 401
 
 
 def test_internal_products_forwards_candidate_pool_filters(monkeypatch):

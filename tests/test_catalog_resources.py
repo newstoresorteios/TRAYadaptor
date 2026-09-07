@@ -3,6 +3,7 @@ import pytest
 
 from app.config import Settings
 from app.resources.categories import CategoryResource
+from app.resources.products import ProductResource
 from app.resources.variants import VariantResource
 from app.tray_auth import TrayAuth
 from app.tray_client import TrayClient
@@ -94,3 +95,36 @@ async def test_variants_list_detail_filters_sku_prices_stock_and_settings():
     assert normalized["variation_settings"]["when_stock_runs_out"] == "sell_extended_lead_time"
     assert "available" not in normalized
     assert detailed["variant"]["id"] == "900"
+
+
+@pytest.mark.asyncio
+async def test_product_properties_list_normalizes_tray_envelope():
+    calls = []
+
+    async def handler(request):
+        calls.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path.endswith("/auth"):
+            return response(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        return response(
+            request,
+            {
+                "paging": {"total": 1, "page": 1, "limit": 20},
+                "Properties": [
+                    {
+                        "Property": {
+                            "id": "3",
+                            "name": "Cor",
+                            "position": "1",
+                            "display": "1",
+                            "active_display": "1",
+                        }
+                    }
+                ],
+            },
+        )
+
+    resource = ProductResource(client(handler))
+    listed = await resource.list_properties({"limit": 20, "page": 1})
+    assert calls[1][1] == "/web_api/products/properties"
+    assert listed["properties"][0]["id"] == "3"
+    assert listed["properties"][0]["name"] == "Cor"

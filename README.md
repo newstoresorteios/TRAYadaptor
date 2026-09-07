@@ -14,9 +14,16 @@ TRAY_CONSUMER_SECRET=
 TRAY_COUPON_VALID_DAYS=180
 TRAY_STORE_CODE=
 TRAY_ADAPTER_TOKEN=
+TRAY_REFRESH_TOKEN=
+TRAY_WEBHOOK_TOKEN=
+TRAY_RATE_LIMIT_PER_MINUTE=90
+TRAY_RATE_LIMIT_PER_DAY=4000
+DATABASE_URL=
 ```
 
-`TRAY_API_BASE` já é o endereço completo da API (incluindo `/web_api`); o cliente não acrescenta esse segmento novamente. Tokens ficam em memória e são reutilizados enquanto válidos. Requisições idempotentes podem receber uma tentativa única de refresh após HTTP 401; o POST de carrinho usa reconciliação antes de qualquer nova tentativa.
+`TRAY_API_BASE` já é o endereço completo da API (incluindo `/web_api`); o cliente não acrescenta esse segmento novamente. Tokens ficam em memória e no cache Postgres (`DATABASE_URL`) e são reutilizados enquanto válidos. Requisições idempotentes podem receber uma tentativa única de refresh após HTTP 401; o POST de carrinho usa reconciliação antes de qualquer nova tentativa.
+
+A Tray limita a loja a **180 req/min** e **10k/dia** (50k no plano corporativo). Com duas instâncias no Render, o Adapter limita por processo a 90/min e 4000/dia (`TRAY_RATE_LIMIT_PER_MINUTE` / `TRAY_RATE_LIMIT_PER_DAY`). Acima disso responde `429` com `error=tray_rate_limited`. Zero desliga o limiter.
 
 ## Execução local
 
@@ -39,12 +46,15 @@ python -m compileall app tests
 
 | Área | Endpoint |
 |---|---|
-| Health | `GET /health` |
-| Diagnóstico somente leitura | `GET /tray/test-auth`, `/tray/test-products`, `/tray/test-resources` |
-| Produtos | `GET /internal/products`, `GET /internal/products/search`, `GET /internal/products/{id}`, `GET /internal/products/{id}/stock` |
+| Health (liveness) | `GET /health` |
+| Health Tray (readiness: token + DB) | `GET /health/tray` |
+| Diagnóstico (Bearer) | `GET /tray/test-auth`, `/tray/test-products`, `/tray/test-resources` |
+| Webhook Tray | `POST /webhooks/tray` |
+| Eventos de webhook | `GET /internal/webhooks/events` |
+| Produtos | `GET /internal/products`, `GET /internal/products/search`, `GET /internal/products/properties`, `GET /internal/products/{id}`, `GET /internal/products/{id}/stock` |
 | Variantes de produto | `GET /internal/products/variants`, `GET /internal/products/variants/{id}` |
 | Categorias | `GET /internal/categories`, `GET /internal/categories/{id}`, `GET /internal/categories/tree/{id}` |
-| Carrinhos | `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `GET /internal/carts/{session_id}` |
+| Carrinhos | `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `GET /internal/carts/{session_id}`, `DELETE /internal/carts/{session_id}` |
 | Carrinho completo | `GET /internal/carts/{session_id}/complete` |
 | Opções de pagamento | `GET /internal/payments/options?cart_session_id=...` ou `?order_id=...` |
 | Métodos de pagamento ativos | `GET /internal/payments/methods/active` |
@@ -53,6 +63,7 @@ python -m compileall app tests
 | Pedido completo | `GET /internal/orders/{id}/complete` |
 | Pagamento do pedido | `GET /internal/orders/{id}/payment` |
 | Envio/rastreio | `PUT /internal/orders/{id}/shipping` |
+| Cancelamento de pedido | `PUT /internal/orders/{id}/cancel` |
 | Marcas | `GET /internal/brands`, `GET /internal/brands/{id}` |
 | Kits | `GET /internal/kits` |
 | MultiCD | `GET /internal/inventory/distribution-centers`, `GET /internal/inventory/distribution-centers/{id}`, `GET /internal/inventory/products/{id}/distribution-centers` |
@@ -61,14 +72,16 @@ python -m compileall app tests
 | Cupons | `GET /internal/coupons`, `GET /internal/coupons/{id}`, além das seis rotas de relacionamentos por tipo |
 | Usuários | `GET /internal/users` |
 
-As rotas internas são majoritariamente de leitura. As mutações expostas nesta etapa são `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `POST /internal/orders` e o PUT restrito aos campos de envio/rastreio. As demais operações POST/PUT/DELETE disponíveis nos resources/client continuam sem rotas de execução automática.
+As rotas `/internal/*` e `/tray/test-*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `GET /health` e `GET /health/tray` são públicas. `POST /webhooks/tray` é pública porque a Tray não envia Bearer; valide `seller_id` contra `TRAY_STORE_CODE` e, em produção, defina `TRAY_WEBHOOK_TOKEN` (query `token` ou header `X-Tray-Webhook-Token`).
+
+As mutações expostas nesta etapa são `POST /internal/carts`, `PUT /internal/carts/{session_id}/items`, `DELETE /internal/carts/{session_id}`, `POST /internal/orders`, o PUT de envio/rastreio e `PUT /internal/orders/{id}/cancel`. As demais operações POST/PUT/DELETE disponíveis nos resources/client continuam sem rotas de execução automática.
 
 ## APIs Tray implementadas
 
 | Resource | Endpoint Tray | Métodos |
 |---|---|---|
 | Auth | `/auth` | POST auth e GET refresh |
-| Products | `/products`, `/products/{id}` | GET, POST, PUT, DELETE |
+| Products | `/products`, `/products/{id}`, `/products/properties` | GET, POST, PUT, DELETE |
 | Product variants | `/products/variants/`, `/products/variants/{id}` | GET |
 | Categories | `/categories/`, `/categories/{id}`, `/categories/tree/{id}` | GET |
 | Carts | `/carts`, `/carts/{session_id}` | POST, GET e PUT de quantidade absoluta |
@@ -98,9 +111,11 @@ Cupons calculam `ends_at` usando `TRAY_COUPON_VALID_DAYS` somente quando o calle
 
 ## Render
 
-O `render.yaml` contém apenas o Web Service, build e start command. As variáveis devem ser cadastradas no ambiente do Render sem valores versionados.
+O `render.yaml` declara o Web Service, duas instâncias starter e `healthCheckPath: /health`. `/health/tray` continua disponível como readiness (token + cache). As variáveis devem ser cadastradas no ambiente do Render sem valores versionados.
 
-As rotas `/internal/*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/health` e as rotas `/tray/*` permanecem públicas.
+`POST /webhooks/tray` recebe `application/x-www-form-urlencoded` (`seller_id`, `scope_name`, `scope_id`, `act`). A Tray só notifica pedidos por padrão; product/stock/variant exigem ticket. Responda HTTP 200 ou a Tray reenvia por até ~20 dias. Eventos idênticos em 120s são deduplicados. `GET /internal/webhooks/events` (Bearer) devolve os mais recentes para o NSAgent consultar.
+
+As rotas `/internal/*` e `/tray/test-*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/health` permanece público. `/tray/test-auth` consome o `code` OAuth de uso único e não deve ser chamado em produção sem necessidade.
 
 ## Carrinhos
 
@@ -126,7 +141,7 @@ O endpoint interno de pedido completo permanece `/internal/orders/{id}/complete`
 
 `GET /internal/orders/{id}/payment` reutiliza a mesma consulta completa e extrai apenas fatos financeiros. `payment_url` usa primeiro `Order.urls.payment` e, na ausência, uma URL válida de `OrderTransactions[].url_payment`. A URL nunca é construída com `order_id`, `access_code`, sessão, token ou hash. `payments_notification.notification` é callback técnico e não é tratado como link para o cliente. O indicador de pagamento confirmado é `has_payment`; a simples existência de um pedido ou de registros em `Payment` não confirma pagamento.
 
-Shipping label, cancelamento, criação de transportadora, configuração de gateway de frete e processamento de Pix, boleto ou cartão continuam fora do escopo.
+Shipping label, NFe, B2B, newsletter, criação de transportadora, configuração de gateway de frete e processamento de Pix, boleto ou cartão continuam fora do escopo. Cancelamento de pedido está em `PUT /internal/orders/{id}/cancel`.
 
 ## Imagens e opções de pagamento
 
