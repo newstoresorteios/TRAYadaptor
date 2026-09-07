@@ -113,7 +113,7 @@ Cupons calculam `ends_at` usando `TRAY_COUPON_VALID_DAYS` somente quando o calle
 
 O `render.yaml` declara o Web Service, duas instâncias starter e `healthCheckPath: /health`. `/health/tray` continua disponível como readiness (token + cache). As variáveis devem ser cadastradas no ambiente do Render sem valores versionados.
 
-`POST /webhooks/tray` recebe `application/x-www-form-urlencoded` (`seller_id`, `scope_name`, `scope_id`, `act`). A Tray só notifica pedidos por padrão; product/stock/variant exigem ticket. Responda HTTP 200 ou a Tray reenvia por até ~20 dias. Eventos idênticos em 120s são deduplicados. `GET /internal/webhooks/events` (Bearer) devolve os mais recentes para o NSAgent consultar.
+`POST /webhooks/tray` recebe `application/x-www-form-urlencoded` (`seller_id`, `scope_name`, `scope_id`, `act`). A Tray só notifica pedidos por padrão; product/stock/variant exigem ticket. Responda HTTP 200 ou a Tray reenvia por até ~20 dias. Eventos idênticos em 120s são deduplicados. `GET /internal/webhooks/events` (Bearer) devolve os mais recentes; `since_id` lista eventos com `id` maior, em ordem crescente, para o NSAgent consumir sem repetir.
 
 As rotas `/internal/*` e `/tray/test-*` exigem `Authorization: Bearer <TRAY_ADAPTER_TOKEN>`. `/health` permanece público. `/tray/test-auth` consome o `code` OAuth de uso único e não deve ser chamado em produção sem necessidade.
 

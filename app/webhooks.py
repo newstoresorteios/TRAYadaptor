@@ -15,11 +15,14 @@ _DEDUP_SECONDS = 120
 _MAX_EVENTS = 100
 _events: deque[dict[str, Any]] = deque(maxlen=_MAX_EVENTS)
 _recent_keys: dict[tuple[str, str, str, str], float] = {}
+_memory_seq = 0
 
 
 def reset_webhooks_for_tests() -> None:
+    global _memory_seq
     _events.clear()
     _recent_keys.clear()
+    _memory_seq = 0
 
 
 def _database_url() -> str:
@@ -91,9 +94,12 @@ def ingest_tray_notification(
         )
         return {"accepted": False, "reason": "seller_id_mismatch", "duplicate": False}
 
+    global _memory_seq
     key = (str(seller_id), str(scope_name), str(scope_id), str(act))
     duplicate = key in _recent_keys
+    _memory_seq += 1
     event = {
+        "id": _memory_seq,
         "seller_id": str(seller_id),
         "scope_name": str(scope_name),
         "scope_id": str(scope_id),
@@ -111,8 +117,10 @@ def ingest_tray_notification(
         return {"accepted": True, "reason": "duplicate", "duplicate": True}
 
     _recent_keys[key] = stamp
+    persisted_id = _persist_event(event)
+    if persisted_id is not None:
+        event["id"] = int(persisted_id)
     _events.appendleft(event)
-    _persist_event(event)
     logger.info(
         "tray.webhook accepted scope_name=%s act=%s",
         _safe_label(scope_name),
@@ -121,12 +129,22 @@ def ingest_tray_notification(
     return {"accepted": True, "reason": "stored", "duplicate": False}
 
 
-def list_recent_events(limit: int = 50) -> list[dict[str, Any]]:
+def list_recent_events(
+    limit: int = 50, since_id: int | None = None
+) -> list[dict[str, Any]]:
     limit = min(max(int(limit), 1), _MAX_EVENTS)
-    persisted = _load_persisted_events(limit)
+    persisted = _load_persisted_events(limit, since_id=since_id)
     if persisted:
         return persisted[:limit]
-    return list(_events)[:limit]
+    events = list(_events)
+    if since_id is not None:
+        newer = [
+            event
+            for event in reversed(events)
+            if int(event.get("id") or 0) > int(since_id)
+        ]
+        return newer[:limit]
+    return events[:limit]
 
 
 def _prune_recent(now_ts: float) -> None:
@@ -137,10 +155,10 @@ def _prune_recent(now_ts: float) -> None:
         _recent_keys.pop(key, None)
 
 
-def _persist_event(event: dict[str, Any]) -> None:
+def _persist_event(event: dict[str, Any]) -> int | None:
     url = _database_url()
     if not url:
-        return
+        return None
     try:
         import psycopg
 
@@ -152,6 +170,7 @@ def _persist_event(event: dict[str, Any]) -> None:
                         seller_id, scope_name, scope_id, act, app_code, received_at
                     )
                     VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
                     """,
                     (
                         event["seller_id"],
@@ -162,12 +181,35 @@ def _persist_event(event: dict[str, Any]) -> None:
                         datetime.fromisoformat(event["received_at"]),
                     ),
                 )
+                row = cur.fetchone()
             conn.commit()
+        return int(row[0]) if row else None
     except Exception as exc:
         logger.warning("tray_webhook_events persist failed: %s", exc)
+        return None
 
 
-def _load_persisted_events(limit: int) -> list[dict[str, Any]]:
+def _row_to_event(row: Any) -> dict[str, Any]:
+    received_at = row[6]
+    return {
+        "id": int(row[0]) if row[0] is not None else None,
+        "seller_id": str(row[1] or ""),
+        "scope_name": str(row[2] or ""),
+        "scope_id": str(row[3] or ""),
+        "act": str(row[4] or ""),
+        "app_code": str(row[5] or ""),
+        "received_at": (
+            received_at.isoformat()
+            if hasattr(received_at, "isoformat")
+            else str(received_at)
+        ),
+        "duplicate": False,
+    }
+
+
+def _load_persisted_events(
+    limit: int, since_id: int | None = None
+) -> list[dict[str, Any]]:
     url = _database_url()
     if not url:
         return []
@@ -176,35 +218,29 @@ def _load_persisted_events(limit: int) -> list[dict[str, Any]]:
 
         with psycopg.connect(url, connect_timeout=5) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT seller_id, scope_name, scope_id, act, app_code, received_at
-                    FROM public.tray_webhook_events
-                    ORDER BY received_at DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
+                if since_id is None:
+                    cur.execute(
+                        """
+                        SELECT id, seller_id, scope_name, scope_id, act, app_code, received_at
+                        FROM public.tray_webhook_events
+                        ORDER BY id DESC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, seller_id, scope_name, scope_id, act, app_code, received_at
+                        FROM public.tray_webhook_events
+                        WHERE id > %s
+                        ORDER BY id ASC
+                        LIMIT %s
+                        """,
+                        (int(since_id), limit),
+                    )
                 rows = cur.fetchall()
-        events: list[dict[str, Any]] = []
-        for row in rows:
-            received_at = row[5]
-            events.append(
-                {
-                    "seller_id": str(row[0] or ""),
-                    "scope_name": str(row[1] or ""),
-                    "scope_id": str(row[2] or ""),
-                    "act": str(row[3] or ""),
-                    "app_code": str(row[4] or ""),
-                    "received_at": (
-                        received_at.isoformat()
-                        if hasattr(received_at, "isoformat")
-                        else str(received_at)
-                    ),
-                    "duplicate": False,
-                }
-            )
-        return events
+        return [_row_to_event(row) for row in rows]
     except Exception as exc:
         logger.warning("tray_webhook_events load failed: %s", exc)
         return []

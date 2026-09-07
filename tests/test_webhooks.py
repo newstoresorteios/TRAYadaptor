@@ -46,6 +46,14 @@ def test_tray_webhook_accepts_form_and_dedups(monkeypatch):
     events = listed.json()["events"]
     assert events[0]["scope_id"] == "55"
     assert events[0]["scope_name"] == "order"
+    assert events[0]["id"] == 1
+
+    newer = client.get(
+        "/internal/webhooks/events?since_id=1",
+        headers={"Authorization": "Bearer adapter-token"},
+    )
+    assert newer.status_code == 200
+    assert newer.json()["events"] == []
 
 
 def test_tray_webhook_ignores_other_seller_and_requires_optional_token(monkeypatch):
@@ -76,3 +84,25 @@ def test_tray_webhook_ignores_other_seller_and_requires_optional_token(monkeypat
     assert accepted.status_code == 200
     assert accepted.json()["accepted"] is False
     assert accepted.json()["reason"] == "seller_id_mismatch"
+
+
+def test_tray_webhook_since_id_returns_newer_events_ascending(monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setattr("app.webhooks._database_url", lambda: "")
+    reset_webhooks_for_tests()
+    client = TestClient(main.app)
+    headers = {"Authorization": "Bearer adapter-token"}
+    first = client.post(
+        "/webhooks/tray",
+        data={"seller_id": "687890", "scope_name": "product", "scope_id": "10", "act": "update"},
+    )
+    second = client.post(
+        "/webhooks/tray",
+        data={"seller_id": "687890", "scope_name": "product", "scope_id": "11", "act": "update"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    listed = client.get("/internal/webhooks/events?since_id=1", headers=headers)
+    events = listed.json()["events"]
+    assert [item["scope_id"] for item in events] == ["11"]
+    assert events[0]["id"] == 2

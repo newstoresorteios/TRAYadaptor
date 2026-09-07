@@ -648,8 +648,11 @@ async def tray_webhook(request: Request):
 
 
 @app.get("/internal/webhooks/events", dependencies=[Depends(require_internal_token)])
-async def internal_webhook_events(limit: int = Query(50, ge=1, le=100)):
-    return {"success": True, "events": list_recent_events(limit)}
+async def internal_webhook_events(
+    limit: int = Query(50, ge=1, le=100),
+    since_id: int | None = Query(default=None, ge=0),
+):
+    return {"success": True, "events": list_recent_events(limit, since_id=since_id)}
 
 
 @app.get("/tray/test-resources", dependencies=[Depends(require_internal_token)])
