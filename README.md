@@ -30,7 +30,7 @@ A Tray limita a loja a **180 req/min** e **10k/dia** (50k no plano corporativo).
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 copy .env.example .env
 uvicorn app.main:app --reload
 ```

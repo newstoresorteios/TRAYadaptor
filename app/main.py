@@ -2,7 +2,11 @@ from typing import Any
 
 import hmac
 import logging
+import os
+import re
+import time
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -75,9 +79,28 @@ async def _lifespan(_: FastAPI):
 app = FastAPI(title="TrayAdapter", lifespan=_lifespan)
 
 
+def _request_trace_id(request: Request) -> str:
+    supplied = (request.headers.get("x-request-id") or "").strip()
+    if supplied and len(supplied) <= 64 and re.fullmatch(r"[A-Za-z0-9_-]+", supplied):
+        return supplied
+    return uuid4().hex
+
+
 @app.middleware("http")
 async def validation_observability(request: Request, call_next):
+    trace_id = _request_trace_id(request)
+    request.state.trace_id = trace_id
+    started_at = time.perf_counter()
     response = await call_next(request)
+    response.headers["X-Trace-ID"] = trace_id
+    tray_logger.info(
+        "[tray.http] trace_id=%s method=%s path=%s status=%s latency_ms=%.2f",
+        trace_id,
+        request.method,
+        _log_request_path(request.url.path),
+        response.status_code,
+        (time.perf_counter() - started_at) * 1000,
+    )
     if response.status_code == 422:
         if request.method == "POST" and request.url.path == "/internal/carts":
             cart_logger.info(
@@ -156,8 +179,18 @@ def require_internal_token(request: Request) -> None:
 
 
 def _log_request_path(path: str) -> str:
-    if path.startswith("/internal/carts/"):
-        return "/internal/carts/{session_id}"
+    dynamic_roots = {
+        "carts": "session_id",
+        "orders": "order_id",
+        "products": "product_id",
+        "categories": "category_id",
+        "brands": "brand_id",
+        "customers": "customer_id",
+    }
+    parts = path.strip("/").split("/")
+    if len(parts) >= 3 and parts[0] == "internal" and parts[1] in dynamic_roots:
+        parts[2] = "{" + dynamic_roots[parts[1]] + "}"
+        return "/" + "/".join(parts)
     return path
 
 
@@ -236,7 +269,17 @@ async def request_validation_handler(
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "tray-adapter", "build": "quota-webhook-2026-09-06"}
+    git_sha = (
+        os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("GIT_COMMIT_SHA")
+        or "unknown"
+    ).strip()
+    return {
+        "status": "ok",
+        "service": "tray-adapter",
+        "build": os.getenv("TRAY_ADAPTER_BUILD", "quota-webhook-2026-09-06"),
+        "git_sha": git_sha[:12] if git_sha != "unknown" else git_sha,
+    }
 
 
 @app.get("/health/tray")

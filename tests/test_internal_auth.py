@@ -77,7 +77,10 @@ def test_internal_routes_require_bearer_and_public_health(monkeypatch):
     configure(monkeypatch)
     monkeypatch.setattr(main, "_resources", lambda: (FakeClient(), SearchAwareFakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource(), FakeResource()))
     client = TestClient(main.app)
-    assert client.get("/health").status_code == 200
+    health = client.get("/health", headers={"X-Request-ID": "trace-health-1"})
+    assert health.status_code == 200
+    assert health.headers["X-Trace-ID"] == "trace-health-1"
+    assert health.json()["git_sha"] == "unknown"
     assert client.get("/internal/products").status_code == 401
     assert client.get("/internal/products", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.get("/internal/products", headers={"Authorization": "Bearer adapter-token"}).status_code == 200
@@ -101,6 +104,15 @@ def test_internal_routes_require_bearer_and_public_health(monkeypatch):
         headers={"Authorization": "Bearer adapter-token"},
     ).status_code == 200
     assert client.get("/internal/webhooks/events").status_code == 401
+
+
+def test_health_exposes_render_commit_without_leaking_full_sha(monkeypatch):
+    configure(monkeypatch)
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "673c9f20b3e9f669416aa5ae49521d70ecb8d3e4")
+    response = TestClient(main.app).get("/health")
+    assert response.status_code == 200
+    assert response.json()["git_sha"] == "673c9f20b3e9"
+    assert len(response.headers["X-Trace-ID"]) == 32
 
 
 def test_internal_products_forwards_candidate_pool_filters(monkeypatch):
