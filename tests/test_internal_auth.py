@@ -66,7 +66,16 @@ def configure(monkeypatch):
 
 
 class SearchAwareFakeResource(FakeResource):
-    async def search_by_tokens(self, tokens, *, brand=None, limit=20, page=1):
+    async def search_by_tokens(
+        self,
+        tokens,
+        *,
+        brand=None,
+        limit=20,
+        page=1,
+        match_mode="all",
+        exclude_product_ids=None,
+    ):
         return {"success": True, "paging": {"total": 0, "page": page, "limit": limit}, "products": []}
 
     async def list_properties(self, params=None):

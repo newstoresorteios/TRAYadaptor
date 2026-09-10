@@ -6,7 +6,7 @@ from ..exceptions import TrayAuthenticationError, TrayConnectionError
 from ..normalizers.common import normalized_list
 from ..normalizers.product import normalize_product
 from ..normalizers.property import normalize_property
-from ..product_search import paginate_products, product_matches_tokens
+from ..product_search import paginate_products, product_matches_tokens, product_token_score
 
 
 class ProductResource(Resource):
@@ -41,20 +41,52 @@ class ProductResource(Resource):
         brand: str | None = None,
         limit: int = 20,
         page: int = 1,
+        match_mode: str = "all",
+        exclude_product_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        candidates = await self._collect_search_candidates(tokens, brand=brand)
-        matched = [
-            product
-            for product in candidates
-            if product_matches_tokens(product, tokens)
-        ]
-        return paginate_products(matched, limit=limit, page=page)
+        candidates = await self._collect_search_candidates(
+            tokens,
+            brand=brand,
+            force_brand_pool=match_mode == "any",
+        )
+        excluded = {str(item) for item in (exclude_product_ids or set())}
+        if match_mode == "any":
+            scored = [
+                (product_token_score(product, tokens), product)
+                for product in candidates
+                if str(product.get("id") or "") not in excluded
+            ]
+            scored = [pair for pair in scored if pair[0] > 0]
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            matched = [product for _, product in scored]
+        else:
+            matched = [
+                product
+                for product in candidates
+                if str(product.get("id") or "") not in excluded
+                and product_matches_tokens(product, tokens)
+            ]
+        result = paginate_products(
+            matched,
+            limit=limit,
+            page=page,
+            preserve_order=match_mode == "any",
+        )
+        result["search"] = {
+            "match_mode": match_mode,
+            "candidate_count": len(candidates),
+            "matched_count": len(matched),
+            "excluded_count": len(excluded),
+            "brand_scoped": bool(brand),
+        }
+        return result
 
     async def _collect_search_candidates(
         self,
         tokens: list[str],
         *,
         brand: str | None,
+        force_brand_pool: bool = False,
     ) -> list[dict[str, Any]]:
         seen: set[str] = set()
         candidates: list[dict[str, Any]] = []
@@ -114,7 +146,7 @@ class ProductResource(Resource):
                 for token in tokens:
                     if token and token not in probes:
                         probes.append(token)
-            if probes:
+            if probes and not force_brand_pool:
                 first_pages = await absorb_many(
                     [
                         {

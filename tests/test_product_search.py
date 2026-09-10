@@ -36,12 +36,23 @@ class RecordingSearchProductResource:
     async def get_product_stock(self, product_id):
         return {"success": True, "product_id": str(product_id), "stock": 0}
 
-    async def search_by_tokens(self, tokens, *, brand=None, limit=20, page=1):
+    async def search_by_tokens(
+        self,
+        tokens,
+        *,
+        brand=None,
+        limit=20,
+        page=1,
+        match_mode="all",
+        exclude_product_ids=None,
+    ):
         self.calls.append({
             "tokens": tokens,
             "brand": brand,
             "limit": limit,
             "page": page,
+            "match_mode": match_mode,
+            "exclude_product_ids": exclude_product_ids or set(),
         })
         matched = [
             product
@@ -304,6 +315,8 @@ def test_internal_products_search_route_contract(monkeypatch):
         "brand": "Christopher Ward",
         "limit": 20,
         "page": 1,
+        "match_mode": "all",
+        "exclude_product_ids": set(),
     }]
 
     assert client.get(
@@ -314,6 +327,49 @@ def test_internal_products_search_route_contract(monkeypatch):
         "/internal/products/search?tokens=sealander&page=0",
         headers=headers,
     ).status_code == 422
+    assert client.get(
+        "/internal/products/search?tokens=sealander&match_mode=invalid",
+        headers=headers,
+    ).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_search_by_tokens_any_mode_ranks_and_excludes_current_product():
+    from app.resources.products import ProductResource
+
+    resource = ProductResource(client=None)
+    calls = []
+
+    async def fake_list(params=None):
+        calls.append(dict(params or {}))
+        brand = (params or {}).get("brand")
+        rows = [
+            product
+            for product in _catalog()
+            if brand is None or product.get("brand") == brand
+        ]
+        return {"success": True, "products": rows, "paging": {}}
+
+    resource.list = fake_list  # type: ignore[method-assign]
+    result = await resource.search_by_tokens(
+        ["sealander", "rosa", "automatico"],
+        brand="Christopher Ward",
+        limit=20,
+        page=1,
+        match_mode="any",
+        exclude_product_ids={"20"},
+    )
+
+    assert [item["id"] for item in result["products"]] == ["10"]
+    assert result["search"] == {
+        "match_mode": "any",
+        "candidate_count": 2,
+        "matched_count": 1,
+        "excluded_count": 1,
+        "brand_scoped": True,
+    }
+    assert len(calls) == resource._SEARCH_BRAND_PAGES
+    assert all("name" not in params for params in calls)
 
 
 def test_search_route_is_not_captured_by_product_id(monkeypatch):

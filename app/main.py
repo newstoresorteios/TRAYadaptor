@@ -421,6 +421,8 @@ async def internal_products_search(
     brand: str | None = Query(None),
     limit: int = Query(20),
     page: int = Query(1),
+    match_mode: str = Query("all"),
+    exclude_product_ids: str | None = Query(None),
 ):
     parsed = parse_tokens(tokens)
     if not parsed:
@@ -429,6 +431,13 @@ async def internal_products_search(
         raise HTTPException(status_code=422, detail="limit must be between 1 and 50")
     if page < 1:
         raise HTTPException(status_code=422, detail="page must be >= 1")
+    if match_mode not in {"all", "any"}:
+        raise HTTPException(status_code=422, detail="match_mode must be all or any")
+    excluded = {
+        item.strip()
+        for item in str(exclude_product_ids or "").split(",")
+        if item.strip()
+    }
     brand_value = brand.strip() if isinstance(brand, str) and brand.strip() else None
     _, resource, *_ = _resources()
     return await resource.search_by_tokens(
@@ -436,6 +445,8 @@ async def internal_products_search(
         brand=brand_value,
         limit=limit,
         page=page,
+        match_mode=match_mode,
+        exclude_product_ids=excluded,
     )
 
 

@@ -62,6 +62,12 @@ def product_matches_tokens(product: dict[str, Any], tokens: list[str]) -> bool:
     return all(_token_present(blob, token) for token in tokens)
 
 
+def product_token_score(product: dict[str, Any], tokens: list[str]) -> int:
+    """Number of requested tokens present, used for bounded similar-item search."""
+    blob = product_search_blob(product)
+    return sum(1 for token in tokens if _token_present(blob, token))
+
+
 def _product_id_sort_key(product: dict[str, Any]) -> tuple[int, int | str]:
     product_id = product.get("id")
     try:
@@ -75,8 +81,9 @@ def paginate_products(
     *,
     limit: int,
     page: int,
+    preserve_order: bool = False,
 ) -> dict[str, Any]:
-    ordered = sorted(products, key=_product_id_sort_key)
+    ordered = list(products) if preserve_order else sorted(products, key=_product_id_sort_key)
     offset = (page - 1) * limit
     return {
         "success": True,
