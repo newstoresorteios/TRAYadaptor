@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 from typing import Any
 
 from .common import Resource
-from ..exceptions import TrayAuthenticationError, TrayConnectionError
+from ..exceptions import TrayAPIError, TrayAuthenticationError, TrayConnectionError
 from ..normalizers.common import normalized_list
 from ..normalizers.product import normalize_product
 from ..normalizers.property import normalize_property
@@ -18,6 +20,76 @@ class ProductResource(Resource):
     _SEARCH_NAME_PAGES = 2
     _SEARCH_BRAND_PAGES = 4
     _SEARCH_FETCH_CONCURRENCY = 2
+
+    @staticmethod
+    def _parse_current_price_range(value: Any) -> tuple[float | None, float | None] | None:
+        if value in (None, ""):
+            return None
+        parts = [part.strip() for part in str(value).split(",", 1)]
+        if len(parts) != 2:
+            return None
+        try:
+            lower = float(parts[0]) if parts[0] else None
+            upper = float(parts[1]) if parts[1] else None
+        except ValueError:
+            return None
+        return lower, upper
+
+    @staticmethod
+    def _effective_price(product: dict[str, Any]) -> float | None:
+        for key in ("current_price", "promotional_price", "price"):
+            value = product.get(key)
+            if value in (None, "", 0, 0.0, "0", "0.00"):
+                continue
+            try:
+                return float(str(value).replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    async def list(self, params: dict[str, Any] | None = None):
+        """Use Tray's documented `price_range` and always enforce it locally.
+
+        `current_price_range` appears in Tray response metadata but is rejected
+        as a request parameter by some stores. It remains part of our internal
+        API for compatibility and is translated before calling Tray.
+        """
+        original = dict(params or {})
+        raw_range = original.pop("current_price_range", None)
+        parsed_range = self._parse_current_price_range(raw_range)
+        if raw_range not in (None, "") and parsed_range is None:
+            from ..exceptions import TrayValidationError
+
+            raise TrayValidationError("current_price_range must be min,max")
+        translated = parsed_range is not None and "price_range" not in original
+        if translated:
+            original["price_range"] = raw_range
+        try:
+            result = await super().list(original)
+        except TrayAPIError:
+            if not translated:
+                raise
+            # Store/API versions vary in accepted price_range syntax. A local
+            # filter is safer than surfacing 500 or silently dropping the cap.
+            original.pop("price_range", None)
+            result = await super().list(original)
+            result["price_filter_source"] = "local_fallback"
+        if parsed_range is None:
+            return result
+        lower, upper = parsed_range
+        products = []
+        for product in result.get("products") or []:
+            price = self._effective_price(product)
+            if price is None:
+                continue
+            if lower is not None and price < lower:
+                continue
+            if upper is not None and price > upper:
+                continue
+            products.append(product)
+        result["products"] = products
+        result.setdefault("price_filter_source", "tray_and_local")
+        return result
 
     async def list_properties(self, params: dict[str, Any] | None = None):
         payload = await self.client.request(

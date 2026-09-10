@@ -53,6 +53,53 @@ async def test_product_normalization_and_crud():
     await resource.create({"Product": {"name": "x"}}); await resource.update("1", {"Product": {"name": "y"}}); await resource.delete("1")
 
 
+@pytest.mark.asyncio
+async def test_current_price_range_is_translated_and_hard_filtered():
+    seen = []
+
+    async def handler(request):
+        if request.url.path.endswith("/auth"):
+            return reply(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        seen.append(dict(request.url.params))
+        return reply(request, {"Products": [
+            {"Product": {"id": "1", "current_price": "3499.90"}},
+            {"Product": {"id": "2", "current_price": "5899.90"}},
+        ]})
+
+    result = await ProductResource(client(handler)).list(
+        {"name": "open heart", "current_price_range": "0,3500", "limit": 20}
+    )
+
+    assert seen[0]["price_range"] == "0,3500"
+    assert "current_price_range" not in seen[0]
+    assert [product["id"] for product in result["products"]] == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_rejected_tray_price_range_falls_back_but_keeps_local_ceiling():
+    product_calls = 0
+
+    async def handler(request):
+        nonlocal product_calls
+        if request.url.path.endswith("/auth"):
+            return reply(request, {"access_token": "a", "refresh_token": "r", "store_id": "687890"})
+        product_calls += 1
+        if "price_range" in request.url.params:
+            return reply(request, {"message": "invalid price range"}, 400)
+        return reply(request, {"Products": [
+            {"Product": {"id": "1", "price": "3200.00"}},
+            {"Product": {"id": "2", "price": "10199.99"}},
+        ]})
+
+    result = await ProductResource(client(handler)).list(
+        {"current_price_range": "0,3500", "limit": 20}
+    )
+
+    assert product_calls == 2
+    assert result["price_filter_source"] == "local_fallback"
+    assert [product["id"] for product in result["products"]] == ["1"]
+
+
 def test_product_normalizes_uppercase_properties_and_recommendation_fields():
     product = normalize_product({
         "id": "1", "name": "Relógio Teste", "brand_id": "10", "model": "Classic",
