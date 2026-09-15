@@ -1,4 +1,5 @@
 from typing import Any
+import unicodedata
 from .common import first, number
 from .image import normalize_images, primary_image_url
 
@@ -23,6 +24,43 @@ def _product_url(value: dict[str, Any]) -> str | None:
     return None
 
 
+def _explicit_specs(value: dict[str, Any], properties: Any) -> dict[str, Any]:
+    """Preserve explicitly supplied specs; never infer facts from a model name."""
+    aliases = {
+        "mechanism": ("mechanism", "movement", "mecanismo", "movimento"),
+        "case_size": ("case_size", "case_size_mm", "diametro da caixa", "tamanho da caixa"),
+        "water_resistance_m": ("water_resistance_m",),
+        "water_resistance": ("water_resistance", "resistencia a agua"),
+        "gender": ("gender", "genero"),
+    }
+    def folded(text):
+        return "".join(c for c in unicodedata.normalize("NFKD", str(text).casefold()) if not unicodedata.combining(c)).strip()
+    supplied = {folded(k): (v, "field:" + k) for k, v in value.items() if isinstance(v, (str, int, float)) and v != ""}
+    if isinstance(properties, dict):
+        for key, item in properties.items():
+            if isinstance(item, (str, int, float)):
+                supplied.setdefault(folded(key), (item, "property:" + key))
+        entries = list(properties.values())
+    else:
+        entries = properties if isinstance(properties, list) else []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        item = raw.get("Property", raw)
+        if not isinstance(item, dict):
+            continue
+        name, content = first(item, "name", "property"), first(item, "value", "content")
+        if name and isinstance(content, (str, int, float)) and content != "":
+            supplied.setdefault(folded(name), (content, "property:" + str(name)))
+    result, sources = {}, {}
+    for key, names in aliases.items():
+        for name in names:
+            if name in supplied:
+                result[key], sources[key] = supplied[name]
+                break
+    return {**result, "attribute_sources": sources}
+
+
 def normalize_product(value: dict[str, Any]) -> dict[str, Any]:
     settings = first(value, "ProductSettings", "product_settings", "settings")
     settings = settings if isinstance(settings, dict) else None
@@ -35,6 +73,7 @@ def normalize_product(value: dict[str, Any]) -> dict[str, Any]:
         variants = [variants]
     images = normalize_images(value.get("ProductImage") or value.get("images"))
     return {
+        **_explicit_specs(value, properties),
         "id": first(value, "id", "product_id"), "name": value.get("name"), "title": value.get("title"),
         "description": value.get("description"), "description_small": value.get("description_small"),
         "ean": value.get("ean"), "reference": first(value, "reference", "sku"), "brand": value.get("brand"),
