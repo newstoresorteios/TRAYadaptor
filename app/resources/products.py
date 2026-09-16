@@ -248,7 +248,7 @@ class ProductResource(Resource):
                     return candidates
                 seen.clear()
                 candidates.clear()
-            await absorb_many(
+            brand_pages = await absorb_many(
                 [
                     {
                         "brand": brand,
@@ -258,6 +258,21 @@ class ProductResource(Resource):
                     for tray_page in range(1, self._SEARCH_BRAND_PAGES + 1)
                 ]
             )
+            # A brand can span more than the initial low-latency window. Keep
+            # walking only while the last page is full, so products on page 5+
+            # remain discoverable without adding calls for smaller brands.
+            next_page = self._SEARCH_BRAND_PAGES + 1
+            last_page = brand_pages[-1] if brand_pages else []
+            while (
+                len(last_page) >= self._SEARCH_TRAY_LIMIT
+                and next_page <= self._SEARCH_MAX_PAGES
+            ):
+                last_page = await absorb({
+                    "brand": brand,
+                    "limit": self._SEARCH_TRAY_LIMIT,
+                    "page": next_page,
+                })
+                next_page += 1
             return candidates
 
         probes: list[str] = []

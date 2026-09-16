@@ -372,6 +372,39 @@ async def test_search_by_tokens_any_mode_ranks_and_excludes_current_product():
     assert all("name" not in params for params in calls)
 
 
+@pytest.mark.asyncio
+async def test_brand_pool_continues_past_four_full_pages():
+    from app.resources.products import ProductResource
+
+    resource = ProductResource(client=None)
+    calls = []
+
+    async def fake_list(params=None):
+        params = dict(params or {})
+        calls.append(params)
+        page = int(params.get("page") or 1)
+        if page <= 4:
+            rows = [
+                {"id": f"{page}-{index}", "brand": "Christopher Ward", "name": "Outro"}
+                for index in range(resource._SEARCH_TRAY_LIMIT)
+            ]
+        elif page == 5:
+            rows = [{"id": "11695", "brand": "Christopher Ward", "name": "C63 Sealander Automatico Azul"}]
+        else:
+            rows = []
+        return {"success": True, "products": rows, "paging": {}}
+
+    resource.list = fake_list  # type: ignore[method-assign]
+    result = await resource.search_by_tokens(
+        ["sealander", "automatico", "azul"],
+        brand="Christopher Ward",
+        match_mode="any",
+    )
+
+    assert result["products"][0]["id"] == "11695"
+    assert [call["page"] for call in calls] == [1, 2, 3, 4, 5]
+
+
 def test_search_route_is_not_captured_by_product_id(monkeypatch):
     configure(monkeypatch)
     products = RecordingSearchProductResource(_catalog())
