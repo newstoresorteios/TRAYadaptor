@@ -75,6 +75,7 @@ class SearchAwareFakeResource(FakeResource):
         page=1,
         match_mode="all",
         exclude_product_ids=None,
+        filters=None,
     ):
         return {"success": True, "paging": {"total": 0, "page": page, "limit": limit}, "products": []}
 

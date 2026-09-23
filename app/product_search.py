@@ -27,10 +27,28 @@ def parse_tokens(raw: str | None) -> list[str]:
 
 
 def product_search_blob(product: dict[str, Any]) -> str:
+    properties = product.get("properties")
     return fold_text(
         " ".join(
-            str(product.get(field) or "")
-            for field in ("name", "brand", "model", "reference", "description")
+            [
+                *(
+                    str(product.get(field) or "")
+                    for field in (
+                        "name",
+                        "brand",
+                        "model",
+                        "reference",
+                        "description",
+                        "mechanism",
+                        "case_size",
+                        "water_resistance_m",
+                        "water_resistance",
+                        "gender",
+                        "material",
+                    )
+                ),
+                str(properties or ""),
+            ]
         )
     )
 

@@ -45,6 +45,7 @@ class RecordingSearchProductResource:
         page=1,
         match_mode="all",
         exclude_product_ids=None,
+        filters=None,
     ):
         self.calls.append({
             "tokens": tokens,
@@ -53,6 +54,7 @@ class RecordingSearchProductResource:
             "page": page,
             "match_mode": match_mode,
             "exclude_product_ids": exclude_product_ids or set(),
+            "filters": filters or {},
         })
         matched = [
             product
@@ -160,6 +162,19 @@ def test_product_matches_tokens_requires_and_and_ignores_order():
         },
         ["automatico"],
     )
+
+
+def test_product_matches_tokens_uses_product_properties_but_not_variant_options():
+    product = {
+        "name": "Relógio Clássico",
+        "properties": [
+            {"name": "Cristal", "value": "Safira"},
+            {"name": "Diâmetro da caixa", "value": "38 mm"},
+        ],
+        "variants": [{"sku": [{"type": "Cor", "value": "Azul"}]}],
+    }
+    assert product_matches_tokens(product, ["safira", "38 mm"])
+    assert not product_matches_tokens(product, ["azul"])
 
 
 def test_paginate_products_builds_coherent_paging():
@@ -317,7 +332,23 @@ def test_internal_products_search_route_contract(monkeypatch):
         "page": 1,
         "match_mode": "all",
         "exclude_product_ids": set(),
+        "filters": {},
     }]
+
+    filtered = client.get(
+        "/internal/products/search?tokens=safira&category_id=10"
+        "&current_price_range=0,2500&property_name=Cristal"
+        "&property_value=Safira&available=1",
+        headers=headers,
+    )
+    assert filtered.status_code == 200
+    assert products.calls[-1]["filters"] == {
+        "category_id": "10",
+        "available": "1",
+        "current_price_range": "0,2500",
+        "property_name": "Cristal",
+        "property_value": "Safira",
+    }
 
     assert client.get(
         "/internal/products/search?tokens=sealander&limit=51",
@@ -365,9 +396,10 @@ async def test_search_by_tokens_any_mode_ranks_and_excludes_current_product():
         "match_mode": "any",
         "candidate_count": 2,
         "matched_count": 1,
-        "excluded_count": 1,
-        "brand_scoped": True,
-    }
+            "excluded_count": 1,
+            "brand_scoped": True,
+            "applied_filter_keys": [],
+        }
     assert len(calls) == resource._SEARCH_BRAND_PAGES
     assert all("name" not in params for params in calls)
 

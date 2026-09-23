@@ -117,6 +117,10 @@ async def test_product_properties_list_normalizes_tray_envelope():
                             "position": "1",
                             "display": "1",
                             "active_display": "1",
+                            "has_product": "1",
+                            "PropertyValues": [
+                                {"id": "31", "name": "Azul", "property_id": "3"}
+                            ],
                         }
                     }
                 ],
@@ -128,3 +132,7 @@ async def test_product_properties_list_normalizes_tray_envelope():
     assert calls[1][1] == "/web_api/products/properties"
     assert listed["properties"][0]["id"] == "3"
     assert listed["properties"][0]["name"] == "Cor"
+    assert listed["properties"][0]["has_product"] == "1"
+    assert listed["properties"][0]["values"] == [
+        {"id": "31", "name": "Azul", "property_id": "3"}
+    ]

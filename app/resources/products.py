@@ -115,11 +115,13 @@ class ProductResource(Resource):
         page: int = 1,
         match_mode: str = "all",
         exclude_product_ids: set[str] | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         candidates = await self._collect_search_candidates(
             tokens,
             brand=brand,
             force_brand_pool=match_mode == "any",
+            filters=filters,
         )
         excluded = {str(item) for item in (exclude_product_ids or set())}
         if match_mode == "any":
@@ -150,6 +152,9 @@ class ProductResource(Resource):
             "matched_count": len(matched),
             "excluded_count": len(excluded),
             "brand_scoped": bool(brand),
+            "applied_filter_keys": sorted(
+                key for key, value in (filters or {}).items() if value is not None
+            ),
         }
         return result
 
@@ -159,6 +164,7 @@ class ProductResource(Resource):
         *,
         brand: str | None,
         force_brand_pool: bool = False,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         seen: set[str] = set()
         candidates: list[dict[str, Any]] = []
@@ -167,7 +173,7 @@ class ProductResource(Resource):
 
         async def absorb(params: dict[str, Any]) -> list[dict[str, Any]]:
             async with sem:
-                result = await self.list(params)
+                result = await self.list({**(filters or {}), **params})
             page_items = result.get("products") or []
             async with lock:
                 for product in page_items:

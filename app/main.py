@@ -200,10 +200,14 @@ def _log_request_path(path: str) -> str:
 @app.exception_handler(TrayAPIError)
 @app.exception_handler(TrayValidationError)
 async def tray_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    if isinstance(exc, TrayConfigurationError): code, status = "tray_configuration_error", 503
-    elif isinstance(exc, TrayAuthenticationError): code, status = "tray_authentication_failed", 503
-    elif isinstance(exc, TrayConnectionError): code, status = "tray_connection_failed", 503
-    elif isinstance(exc, TrayValidationError): code, status = str(exc), 400
+    if isinstance(exc, TrayConfigurationError):
+        code, status = "tray_configuration_error", 503
+    elif isinstance(exc, TrayAuthenticationError):
+        code, status = "tray_authentication_failed", 503
+    elif isinstance(exc, TrayConnectionError):
+        code, status = "tray_connection_failed", 503
+    elif isinstance(exc, TrayValidationError):
+        code, status = str(exc), 400
     else:
         status = getattr(exc, "status_code", None) or 503
         code = "tray_rate_limited" if status == 429 else "tray_api_error"
@@ -423,6 +427,15 @@ async def internal_products_search(
     page: int = Query(1),
     match_mode: str = Query("all"),
     exclude_product_ids: str | None = Query(None),
+    category_id: str | None = Query(None),
+    available: str | None = Query(None),
+    available_in_store: str | None = Query(None),
+    current_price_range: str | None = Query(None),
+    property_name: str | None = Query(None),
+    property_id: str | None = Query(None),
+    property_value: str | None = Query(None),
+    property_value_id: str | None = Query(None),
+    model: str | None = Query(None),
 ):
     parsed = parse_tokens(tokens)
     if not parsed:
@@ -440,6 +453,21 @@ async def internal_products_search(
     }
     brand_value = brand.strip() if isinstance(brand, str) and brand.strip() else None
     _, resource, *_ = _resources()
+    filters = {
+        key: value
+        for key, value in {
+            "category_id": category_id,
+            "available": available,
+            "available_in_store": available_in_store,
+            "current_price_range": current_price_range,
+            "property_name": property_name,
+            "property_id": property_id,
+            "property_value": property_value,
+            "property_value_id": property_value_id,
+            "model": model,
+        }.items()
+        if value not in (None, "")
+    }
     return await resource.search_by_tokens(
         parsed,
         brand=brand_value,
@@ -447,6 +475,7 @@ async def internal_products_search(
         page=page,
         match_mode=match_mode,
         exclude_product_ids=excluded,
+        filters=filters,
     )
 
 
