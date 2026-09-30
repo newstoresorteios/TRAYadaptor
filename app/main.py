@@ -27,6 +27,7 @@ from .resources.orders import OrderResource
 from .resources.payments import PaymentOptionsResource
 from .resources.products import ProductResource
 from .resources.shippings import ShippingResource
+from .resources.sold_products import SoldProductResource
 from .resources.users import UserResource
 from .resources.variants import VariantResource
 from .schemas.carts import CartCreateRequest, CartItemQuantityUpdateRequest
@@ -168,6 +169,10 @@ def _shipping_resource() -> ShippingResource:
 
 def _order_resource() -> OrderResource:
     return OrderResource(_client())
+
+
+def _sold_product_resource() -> SoldProductResource:
+    return SoldProductResource(_client())
 
 
 def require_internal_token(request: Request) -> None:
@@ -348,6 +353,7 @@ ORDER_FILTERS = {
     "lastModifiedStart", "lastModifiedEnd",
     "paymentDateStart", "paymentDateEnd",
 }
+SOLD_PRODUCT_FILTERS = {"id", "product_id", "limit", "page", "sort"}
 
 
 def _product_params(request: Request) -> dict[str, Any]:
@@ -602,6 +608,13 @@ async def internal_order_create(payload: OrderCreateRequest):
 @app.get("/internal/orders", dependencies=[Depends(require_internal_token)])
 async def internal_orders(request: Request):
     return await _order_resource().list(_order_params(request))
+
+
+@app.get("/internal/products-sold", dependencies=[Depends(require_internal_token)])
+async def internal_products_sold(request: Request):
+    return await _sold_product_resource().list(
+        _params(request, SOLD_PRODUCT_FILTERS, limit_default=50)
+    )
 
 
 @app.get("/internal/orders/{order_id}/complete", dependencies=[Depends(require_internal_token)])
