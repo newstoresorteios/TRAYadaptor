@@ -58,3 +58,48 @@ def test_route_returns_normalized_error(monkeypatch):
     response = TestClient(main.app).get('/internal/ready-delivery?query=Tissot', headers={'Authorization': 'Bearer adapter-token'})
     assert response.status_code == 503
     assert response.json() == {'detail': 'ready_delivery_unavailable'}
+
+
+@pytest.mark.asyncio
+async def test_sliding_pagination_discovers_all_nine_pages_once():
+    calls = []
+    def handler(req):
+        number = int(req.url.params['pg'])
+        calls.append(number)
+        name = 'Tissot Heritage 1938 Salmão' if number == 9 else f'Outro modelo {number}'
+        body = html(name, pages=f'?pg={min(9, max(4, number + 1))}')
+        return httpx.Response(200, text=body.replace('/heritage', f'/product-{number}'))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await search_ready_delivery('Tissot Heritage 1938 salmão', client)
+    assert sorted(calls) == list(range(1, 10))
+    assert result['complete'] and len(result['products']) == 1
+    assert result['products'][0]['url'].endswith('product-9')
+
+
+@pytest.mark.asyncio
+async def test_unbounded_pagination_fails_instead_of_reporting_not_found():
+    calls = []
+    def handler(req):
+        number = int(req.url.params['pg'])
+        calls.append(number)
+        return httpx.Response(200, text=html(pages=f'?pg={number + 1}'))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match='ready_delivery_incomplete'):
+            await search_ready_delivery('Hamilton', client)
+    assert max(calls) == 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', 'Quero comprar', 'Preciso do', 'Vocês poderiam me informar sobre', 'Estou procurando'])
+async def test_conversational_words_do_not_hide_available_model(prefix):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(
+        200, text=html('Hamilton Khaki Field Preto H69401131')))) as client:
+        result = await search_ready_delivery(f'{prefix} Hamilton Khaki Field Preto H69401131 pronta entrega', client)
+    assert len(result['products']) == 1
+
+
+@pytest.mark.asyncio
+async def test_color_and_reference_are_still_required():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=html()))) as client:
+        for query in ('Quero comprar Tissot Heritage 1938 azul', 'Preciso do Tissot Heritage T999'):
+            assert not (await search_ready_delivery(query, client))['products']

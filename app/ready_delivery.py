@@ -48,20 +48,28 @@ async def search_ready_delivery(query: str, client=None):
                 raise ValueError('ready_delivery_invalid_page')
             return parse_page(response.text)
         first, total = await page(1)
-        if total > 20:
-            raise ValueError('ready_delivery_incomplete')
         # Bounded concurrency and total deadline; partial results are never "not found".
         semaphore = asyncio.Semaphore(3)
         async def bounded(number):
             async with semaphore:
                 return await page(number)
-        rest = await asyncio.gather(*(bounded(n) for n in range(2, total + 1)))
         rows = {p['url']: p for p in first}
-        for products, discovered_total in rest:
-            if discovered_total > total:
+        next_page = 2
+        # The storefront shows a sliding pagination window, not the last page.
+        # Follow newly discovered pages while retaining the same hard bounds.
+        while True:
+            if total > 20:
                 raise ValueError('ready_delivery_incomplete')
-            rows.update({p['url']: p for p in products})
-        stop = set('ola oi voces voce teria teriam tem esse essa esses essas este esta aquele aquela algum alguma relogio relogios na no de da do a o os as um uma cor pronta entrega disponivel disponibilidade por favor para gostaria saber se e em qual quanto custa valor preco ai hoje'.split())
+            if next_page > total:
+                break
+            batch_end = min(total, next_page + 2)
+            rest = await asyncio.gather(*(bounded(n) for n in range(next_page, batch_end + 1)))
+            next_page = batch_end + 1
+            for products, discovered_total in rest:
+                total = max(total, discovered_total)
+                rows.update({p['url']: p for p in products})
+        stop = set('ola oi bom boa dia tarde noite tudo bem voces voce teria teriam tem esse essa esses essas este esta aquele aquela algum alguma relogio relogios modelo modelos na no de da do a o os as um uma cor pronta entrega disponivel disponibilidade por favor para gostaria saber se e em qual quanto custa valor preco ai hoje quero queria comprar preciso procuro procurando buscando busco encontrar consultar verificar pode podem poderia poderiam me informar sobre ha existe ainda obrigado obrigada'.split())
+        stop.add('estou')
         tokens = [t for t in re.findall(r'[a-z0-9]+', folded(query)) if t not in stop and len(t) > 1]
         matches = [p for p in rows.values() if tokens and set(tokens).issubset(set(re.findall(r'[a-z0-9]+', folded(p['name'] + ' ' + p['reference']))))]
         return {'success': True, 'source': SOURCE, 'checkedAt': datetime.now(timezone.utc).isoformat(),
