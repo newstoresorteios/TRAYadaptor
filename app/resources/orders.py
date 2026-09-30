@@ -205,7 +205,16 @@ class OrderResource:
             len(orders),
             str(bool(params.get("session_id"))).lower(),
         )
-        return {"success": True, "paging": paging, "orders": orders}
+        # Only publish filter names, never upstream values (which may contain PII).
+        allowed = {"id", "date", "created", "modified", "createdStart", "createdEnd",
+                   "lastModifiedStart", "lastModifiedEnd", "status", "customer_id"}
+        available = payload.get("availableFilters", []) if isinstance(payload, dict) else []
+        applied = payload.get("appliedFilters", []) if isinstance(payload, dict) else []
+        return {"success": True, "paging": paging, "orders": orders,
+                "filter_support": {
+                    "available": [key for key in available if isinstance(key, str) and key in allowed],
+                    "applied": [key for key in applied if isinstance(key, str) and key in allowed],
+                }}
 
     async def get(self, order_id: int) -> dict[str, Any]:
         payload = await self.client.request("GET", f"/orders/{order_id}")
