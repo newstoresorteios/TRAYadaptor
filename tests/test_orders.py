@@ -22,6 +22,18 @@ from app.tray_client import TrayClient
 SESSION_ID = "order-session-123"
 
 
+def test_complete_preserves_historical_header():
+    source = {
+        "id": "17128", "customer_id": "99", "date": "2020-04-10",
+        "created": "2020-04-10 12:00:00", "modified": "2021-05-11 09:00:00",
+        "payment_date": "2020-04-11", "total": "20.00", "status": "FINALIZADO",
+    }
+    result = normalize_order_complete({"Order": source})
+    basic = normalize_order({"Order": source})
+    for key in source:
+        assert result["order"][key] == basic[key]
+
+
 def settings():
     return Settings(
         "https://tray.test/web_api",

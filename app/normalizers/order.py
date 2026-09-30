@@ -422,7 +422,10 @@ def normalize_order_complete(payload: Any) -> dict[str, Any]:
     basic = normalize_order(order)
     order_result = {
         key: basic[key]
-        for key in ("id", "status", "status_group", "total")
+        for key in (
+            "id", "status", "status_group", "total", "customer_id",
+            "date", "created", "modified", "payment_date",
+        )
         if key in basic
     }
     for key in ("partial_total", "discount", "taxes"):
