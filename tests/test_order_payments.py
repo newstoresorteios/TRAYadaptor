@@ -315,7 +315,7 @@ async def test_order_payment_lookup_reuses_complete_once_and_never_logs_url(
 
     result = await OrderResource(client(handler)).payment(123)
 
-    assert upstream_paths == ["/web_api/orders/123/full"]
+    assert upstream_paths == ["/web_api/orders/123/complete"]
     assert result["order_id"] == 123
     assert result["payment"]["payment_url"] == official_url
     assert "[tray.order.payment.lookup]" in caplog.text

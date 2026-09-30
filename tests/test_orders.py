@@ -831,10 +831,7 @@ async def test_order_list_detail_and_session_filter_normalization():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fallback_status", [404, 405])
-async def test_order_complete_uses_full_then_legacy_fallback_only_for_404_405(
-    fallback_status,
-):
+async def test_order_complete_uses_official_endpoint_with_items():
     paths = []
 
     async def handler(request):
@@ -844,8 +841,6 @@ async def test_order_complete_uses_full_then_legacy_fallback_only_for_404_405(
                 {"access_token": "a", "refresh_token": "r", "store_id": "687890"},
             )
         paths.append(request.url.path)
-        if request.url.path.endswith("/full"):
-            return response(request, {"message": "not supported"}, fallback_status)
         return response(
             request,
             {
@@ -871,7 +866,6 @@ async def test_order_complete_uses_full_then_legacy_fallback_only_for_404_405(
 
     result = await OrderResource(client(handler)).complete(123)
     assert paths == [
-        "/web_api/orders/123/full",
         "/web_api/orders/123/complete",
     ]
     assert result["order"]["status_group"] == "shipped"
@@ -879,7 +873,7 @@ async def test_order_complete_uses_full_then_legacy_fallback_only_for_404_405(
 
 
 @pytest.mark.asyncio
-async def test_order_complete_uses_full_as_primary_without_legacy_request():
+async def test_order_complete_uses_documented_endpoint_only():
     paths = []
 
     async def handler(request):
@@ -895,12 +889,12 @@ async def test_order_complete_uses_full_as_primary_without_legacy_request():
         )
 
     result = await OrderResource(client(handler)).complete(123)
-    assert paths == ["/web_api/orders/123/full"]
+    assert paths == ["/web_api/orders/123/complete"]
     assert result["order"]["status_group"] == "awaiting_shipment"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [400, 401, 500])
+@pytest.mark.parametrize("status", [400, 401, 404, 405, 500])
 async def test_order_complete_does_not_fallback_for_other_errors(status):
     paths = []
 
@@ -915,7 +909,7 @@ async def test_order_complete_does_not_fallback_for_other_errors(status):
 
     with pytest.raises(TrayAPIError):
         await OrderResource(client(handler)).complete(123)
-    assert all(path.endswith("/full") for path in paths)
+    assert all(path.endswith("/complete") for path in paths)
 
 
 def test_complete_order_normalizer_preserves_nested_facts_only():

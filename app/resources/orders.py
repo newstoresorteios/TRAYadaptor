@@ -226,27 +226,10 @@ class OrderResource:
         return {"success": True, "order": order}
 
     async def complete(self, order_id: int) -> dict[str, Any]:
-        try:
-            payload = await self.client.request("GET", f"/orders/{order_id}/full")
-            variant = "full"
-        except TrayAPIError as exc:
-            if exc.status_code not in {404, 405}:
-                logger.info(
-                    "[tray.order.full] variant=full accepted=false "
-                    "fallback=false status_code=%s",
-                    exc.status_code or "none",
-                )
-                raise
-            logger.info(
-                "[tray.order.full] variant=full accepted=false fallback=true "
-                "status_code=%s",
-                exc.status_code,
-            )
-            payload = await self.client.request(
-                "GET",
-                f"/orders/{order_id}/complete",
-            )
-            variant = "complete"
+        # Official endpoint: /orders/:id/complete. /full is not documented and
+        # consumed an extra failed request for every historical order.
+        payload = await self.client.request("GET", f"/orders/{order_id}/complete")
+        variant = "complete"
         normalized = normalize_order_complete(payload)
         logger.info(
             "[tray.order.full] variant=%s accepted=true order_id=%s",
