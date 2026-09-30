@@ -103,3 +103,21 @@ async def test_color_and_reference_are_still_required():
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=html()))) as client:
         for query in ('Quero comprar Tissot Heritage 1938 azul', 'Preciso do Tissot Heritage T999'):
             assert not (await search_ready_delivery(query, client))['products']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('query,name,match', [
+    ('PRX 35mm azul', 'Tissot PRX Azul 35 mm', True),
+    ('PRX 35 mm azul', 'Tissot PRX Azul 35mm', True),
+    ('PRX 35mm azul', 'Tissot PRX Azul 40 mm', False),
+    ('PRX 35mm azul', 'Tissot PRX Azul 35.5 mm', False),
+    ('PRX 35,5mm azul', 'Tissot PRX Azul 35.5 mm', True),
+    ('PRX 35mm azul', 'Tissot PRX Lady Ouro Rosa Madrepérola Branca 35 mm', False),
+    ('PRX 35mm prateado', 'Tissot PRX Prata 35 mm', True),
+    ('PRX 35mm prateado', 'Tissot PRX Branco 35 mm', False),
+    ('T999', 'Tissot PRX Azul L999 35 mm', False),
+])
+async def test_story_size_color_and_reference_constraints(query, name, match):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=html(name)))) as client:
+        result = await search_ready_delivery(query, client)
+    assert bool(result['products']) is match
