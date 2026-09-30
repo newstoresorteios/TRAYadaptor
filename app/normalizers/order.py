@@ -425,6 +425,8 @@ def normalize_order_complete(payload: Any) -> dict[str, Any]:
         for key in (
             "id", "status", "status_group", "total", "customer_id",
             "date", "created", "modified", "payment_date",
+            "has_payment", "has_shipment", "has_invoice",
+            "payment_method", "payment_method_id",
         )
         if key in basic
     }

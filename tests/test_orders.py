@@ -27,6 +27,7 @@ def test_complete_preserves_historical_header():
         "id": "17128", "customer_id": "99", "date": "2020-04-10",
         "created": "2020-04-10 12:00:00", "modified": "2021-05-11 09:00:00",
         "payment_date": "2020-04-11", "total": "20.00", "status": "FINALIZADO",
+        "has_payment": "1", "payment_method_id": "3",
     }
     result = normalize_order_complete({"Order": source})
     basic = normalize_order({"Order": source})
@@ -816,7 +817,11 @@ async def test_order_list_detail_and_session_filter_normalization():
                 "has_invoice": False,
             }
         }
-        return response(request, {"Orders": [order]} if request.url.path.endswith("/orders") else order)
+        return response(request, {
+            "Orders": [order],
+            "availableFilters": ["date", "modified", "private-field"],
+            "appliedFilters": {"date": "private-value", "customer_name": "private-name"},
+        } if request.url.path.endswith("/orders") else order)
 
     resource = OrderResource(client(handler))
     listed = await resource.list({"session_id": SESSION_ID, "limit": 20})
@@ -824,6 +829,8 @@ async def test_order_list_detail_and_session_filter_normalization():
     assert requests[0].url.params["session_id"] == SESSION_ID
     assert listed["orders"][0]["status"] == "A ENVIAR VINDI"
     assert listed["orders"][0]["status_group"] == "awaiting_shipment"
+    assert listed["filter_support"] == {"available": ["date", "modified"], "applied": ["date"]}
+    assert "private-value" not in str(listed)
     assert detail["order"]["id"] == 123
     assert detail["order"]["has_payment"] is True
     assert detail["order"]["has_shipment"] is False
