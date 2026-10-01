@@ -74,7 +74,13 @@ async def search_ready_delivery(query: str, client=None):
         stop = set('ola oi bom boa dia tarde noite tudo bem voces voce teria teriam tem esse essa esses essas este esta aquele aquela algum alguma relogio relogios modelo modelos na no de da do a o os as um uma cor pronta entrega disponivel disponibilidade por favor para gostaria saber se e em qual quanto custa valor preco ai hoje quero queria comprar preciso procuro procurando buscando busco encontrar consultar verificar pode podem poderia poderiam me informar sobre ha existe ainda obrigado obrigada'.split())
         stop.update({'estou', 'com', 'mostrador', 'sim', 'consegue', 'passar', 'quais', 'que', 'estoque', 'ja', 'falei'})
         tokenize = lambda value: re.findall(r'[a-z0-9]+(?:\.[0-9]+)*', folded(value))
-        tokens = [t for t in tokenize(query) if t not in stop and (len(t) > 1 or t.isdigit())]
+        # A storefront/category navigation request supplies a source, not a
+        # product name. Remove that intent phrase but retain every SKU/facet.
+        product_query = re.sub(
+            r'\b(?:(?:ver|abrir|mostrar|consultar)\s+)?(?:a\s+|o\s+)?'
+            r'(?:categoria|catalogo|lista|secao)\s+(?:(?:de|da)\s+)?pronta entrega\b',
+            '', folded(query))
+        tokens = [t for t in tokenize(product_query) if t not in stop and (len(t) > 1 or t.isdigit())]
         matches = [p for p in rows.values() if p['listedAvailable'] and
                    (not tokens or set(tokens).issubset(set(tokenize(p['name'] + ' ' + p['reference']))))]
         return {'success': True, 'source': SOURCE, 'checkedAt': datetime.now(timezone.utc).isoformat(),

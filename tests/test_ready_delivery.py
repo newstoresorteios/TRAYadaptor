@@ -14,7 +14,9 @@ def html(name='Tissot Heritage 1938 Salmão', available='YES', pages=''):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('query', ['pronta entrega', 'Você consegue me passar quais modelos tem a pronta entrega?',
-                                  'Quero saber quais pronta entrega você tem'])
+                                  'Quero saber quais pronta entrega você tem',
+                                  'Categoria pronta entrega', 'Ver a categoria de pronta entrega',
+                                  'Catálogo de pronta entrega'])
 async def test_broad_inventory_request_lists_available_options(query):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=html()))) as client:
         result = await search_ready_delivery(query, client)
