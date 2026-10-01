@@ -72,12 +72,13 @@ async def search_ready_delivery(query: str, client=None):
                 total = max(total, discovered_total)
                 rows.update({p['url']: p for p in products})
         stop = set('ola oi bom boa dia tarde noite tudo bem voces voce teria teriam tem esse essa esses essas este esta aquele aquela algum alguma relogio relogios modelo modelos na no de da do a o os as um uma cor pronta entrega disponivel disponibilidade por favor para gostaria saber se e em qual quanto custa valor preco ai hoje quero queria comprar preciso procuro procurando buscando busco encontrar consultar verificar pode podem poderia poderiam me informar sobre ha existe ainda obrigado obrigada'.split())
-        stop.update({'estou', 'com', 'mostrador', 'sim'})
+        stop.update({'estou', 'com', 'mostrador', 'sim', 'consegue', 'passar', 'quais', 'que', 'estoque', 'ja', 'falei'})
         tokenize = lambda value: re.findall(r'[a-z0-9]+(?:\.[0-9]+)*', folded(value))
         tokens = [t for t in tokenize(query) if t not in stop and (len(t) > 1 or t.isdigit())]
-        matches = [p for p in rows.values() if tokens and set(tokens).issubset(set(tokenize(p['name'] + ' ' + p['reference'])))]
+        matches = [p for p in rows.values() if p['listedAvailable'] and
+                   (not tokens or set(tokens).issubset(set(tokenize(p['name'] + ' ' + p['reference']))))]
         return {'success': True, 'source': SOURCE, 'checkedAt': datetime.now(timezone.utc).isoformat(),
-                'complete': True, 'products': matches[:10], 'requiresModel': not tokens,
+                'complete': True, 'products': matches[:10], 'requiresModel': False,
                 'evidenceType': 'public_listing', 'stockConfirmed': False}
     async def execute():
         if client is not None:

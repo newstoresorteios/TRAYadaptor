@@ -13,6 +13,16 @@ def html(name='Tissot Heritage 1938 Salmão', available='YES', pages=''):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('query', ['pronta entrega', 'Você consegue me passar quais modelos tem a pronta entrega?',
+                                  'Quero saber quais pronta entrega você tem'])
+async def test_broad_inventory_request_lists_available_options(query):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=html()))) as client:
+        result = await search_ready_delivery(query, client)
+    assert len(result['products']) == 1
+    assert not result['requiresModel'] and not result['stockConfirmed']
+
+
+@pytest.mark.asyncio
 async def test_pages_color_and_public_evidence():
     calls = []
     def handler(req):
