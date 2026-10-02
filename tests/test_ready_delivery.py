@@ -166,7 +166,7 @@ def test_route_pagination_contract(monkeypatch):
     client = TestClient(main.app)
     headers = {'Authorization': 'Bearer adapter-token'}
     assert client.get('/internal/ready-delivery?query=pronta&offset=20&limit=10', headers=headers).status_code == 200
-    assert seen == [('pronta', {'offset': 20, 'limit': 10})]
+    assert seen == [('pronta', {'offset': 20, 'limit': 10, 'snapshot_id': None})]
     for query in ('offset=-1', 'limit=0', 'limit=51'):
         assert client.get('/internal/ready-delivery?query=pronta&'+query, headers=headers).status_code == 422
 
@@ -174,3 +174,31 @@ def test_route_pagination_contract(monkeypatch):
 def test_image_host_cannot_be_injected():
     body = html().replace('"reference": "T142"', '"urlImage": "https://evil.test/photo.jpg", "reference": "T142"')
     assert 'image_url' not in parse_page(body)[0][0]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_keeps_catalog_stable_and_expires_explicitly(monkeypatch):
+    from app import ready_delivery as ready
+    ready._SNAPSHOTS.clear()
+    calls=[]
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(200,text=html('Original' if len(calls)==1 else 'Changed'))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        first=await ready.search_ready_delivery('pronta entrega',client)
+        repeated=await ready.search_ready_delivery('pronta entrega',client,snapshot_id=first['snapshot_id'])
+        assert first==repeated and len(calls)==1
+        with pytest.raises(KeyError):
+            await ready.search_ready_delivery('Seiko',client,snapshot_id=first['snapshot_id'])
+        timestamp=ready.time.monotonic()
+        monkeypatch.setattr(ready.time,'monotonic',lambda:timestamp+601)
+        with pytest.raises(KeyError):
+            await ready.search_ready_delivery('pronta entrega',client,snapshot_id=first['snapshot_id'])
+
+
+def test_expired_snapshot_is_not_empty_catalog(monkeypatch):
+    configure(monkeypatch)
+    response=TestClient(main.app).get('/internal/ready-delivery?query=pronta&snapshot_id='+('0'*32),
+                                    headers={'Authorization':'Bearer adapter-token'})
+    assert response.status_code==409
+    assert response.json()=={'detail':'ready_delivery_snapshot_expired'}

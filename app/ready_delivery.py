@@ -3,12 +3,26 @@ import asyncio
 import json
 import re
 import unicodedata
+import time
+from uuid import uuid4
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
 
 SOURCE = "https://www.newstorerj.com/pronta-entrega"
+_SNAPSHOTS = {}
+SNAPSHOT_TTL_SECONDS = 600
+
+
+def _result(query, rows, checked_at, snapshot_id, offset, limit):
+    selected = rows[offset:offset + limit]
+    more = offset + len(selected) < len(rows)
+    return {'success': True, 'source': SOURCE, 'checkedAt': checked_at,
+            'complete': True, 'products': selected, 'requiresModel': False,
+            'query': query, 'total': len(rows), 'returned': len(selected), 'offset': offset, 'limit': limit,
+            'has_more': more, 'next_offset': offset + len(selected) if more else None,
+            'snapshot_id': snapshot_id, 'evidenceType': 'public_listing', 'stockConfirmed': False}
 
 
 def folded(value):
@@ -45,10 +59,20 @@ def parse_page(html):
     return products, max(pages, default=1)
 
 
-async def search_ready_delivery(query: str, client=None, *, offset: int = 0, limit: int = 10):
+async def search_ready_delivery(query: str, client=None, *, offset: int = 0, limit: int = 10,
+                                snapshot_id: str | None = None):
     """No stock quantities or foreign-store product IDs escape this boundary."""
     if offset < 0 or not 1 <= limit <= 50:
         raise ValueError('ready_delivery_invalid_pagination')
+    now = time.monotonic()
+    for key, entry in list(_SNAPSHOTS.items()):
+        if now - entry[0] > SNAPSHOT_TTL_SECONDS:
+            del _SNAPSHOTS[key]
+    if snapshot_id:
+        entry = _SNAPSHOTS.get(snapshot_id)
+        if not entry or entry[1] != query:
+            raise KeyError('ready_delivery_snapshot_expired')
+        return _result(query, entry[2], entry[3], snapshot_id, offset, limit)
     async def run(http):
         async def page(number):
             response = await http.get(SOURCE, params={'pg': number}, timeout=8.0, follow_redirects=False)
@@ -89,13 +113,12 @@ async def search_ready_delivery(query: str, client=None, *, offset: int = 0, lim
         tokens = [t for t in tokenize(product_query) if t not in stop and (len(t) > 1 or t.isdigit())]
         matches = [p for p in rows.values() if p['listedAvailable'] and
                    (not tokens or set(tokens).issubset(set(tokenize(p['name'] + ' ' + p['reference']))))]
-        selected = matches[offset:offset + limit]
-        return {'success': True, 'source': SOURCE, 'checkedAt': datetime.now(timezone.utc).isoformat(),
-                'complete': True, 'products': selected, 'requiresModel': False,
-                'query': query, 'total': len(matches), 'returned': len(selected), 'offset': offset, 'limit': limit,
-                'has_more': offset + len(selected) < len(matches),
-                'next_offset': offset + len(selected) if offset + len(selected) < len(matches) else None,
-                'evidenceType': 'public_listing', 'stockConfirmed': False}
+        checked_at = datetime.now(timezone.utc).isoformat()
+        snapshot = uuid4().hex
+        if len(_SNAPSHOTS) >= 32:
+            del _SNAPSHOTS[next(iter(_SNAPSHOTS))]
+        _SNAPSHOTS[snapshot] = (time.monotonic(), query, matches, checked_at)
+        return _result(query, matches, checked_at, snapshot, offset, limit)
     async def execute():
         if client is not None:
             return await run(client)

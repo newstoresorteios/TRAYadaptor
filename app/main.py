@@ -421,11 +421,14 @@ def normalize_products(payload: Any) -> list[dict[str, Any]]:
 
 @app.get("/internal/ready-delivery", dependencies=[Depends(require_internal_token)])
 async def internal_ready_delivery(query: str = Query(..., min_length=1, max_length=500),
-                                  offset: int = Query(0, ge=0), limit: int = Query(10, ge=1, le=50)):
+                                  offset: int = Query(0, ge=0), limit: int = Query(10, ge=1, le=50),
+                                  snapshot_id: str | None = Query(None, pattern=r'^[a-f0-9]{32}$')):
     from .ready_delivery import search_ready_delivery
     import asyncio
     try:
-        return await search_ready_delivery(query, offset=offset, limit=limit)
+        return await search_ready_delivery(query, offset=offset, limit=limit, snapshot_id=snapshot_id)
+    except KeyError:
+        raise HTTPException(409, detail="ready_delivery_snapshot_expired") from None
     except (httpx.HTTPError, ValueError, asyncio.TimeoutError):
         raise HTTPException(503, detail="ready_delivery_unavailable") from None
 
