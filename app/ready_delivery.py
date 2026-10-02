@@ -37,12 +37,18 @@ def parse_page(html):
             'url': url, 'listedAvailable': row.get('availability') == 'YES',
             'source': SOURCE,
         })
+        image = str(row.get('urlImage') or '').replace(r'\/', '/')
+        parsed_image = urlparse(image)
+        if parsed_image.scheme == 'https' and (parsed_image.hostname or '').endswith('.tcdn.com.br'):
+            products[-1]['image_url'] = image
     pages = [int(n) for n in re.findall(r'[?&]pg=(\d+)', html)]
     return products, max(pages, default=1)
 
 
-async def search_ready_delivery(query: str, client=None):
+async def search_ready_delivery(query: str, client=None, *, offset: int = 0, limit: int = 10):
     """No stock quantities or foreign-store product IDs escape this boundary."""
+    if offset < 0 or not 1 <= limit <= 50:
+        raise ValueError('ready_delivery_invalid_pagination')
     async def run(http):
         async def page(number):
             response = await http.get(SOURCE, params={'pg': number}, timeout=8.0, follow_redirects=False)
@@ -83,8 +89,12 @@ async def search_ready_delivery(query: str, client=None):
         tokens = [t for t in tokenize(product_query) if t not in stop and (len(t) > 1 or t.isdigit())]
         matches = [p for p in rows.values() if p['listedAvailable'] and
                    (not tokens or set(tokens).issubset(set(tokenize(p['name'] + ' ' + p['reference']))))]
+        selected = matches[offset:offset + limit]
         return {'success': True, 'source': SOURCE, 'checkedAt': datetime.now(timezone.utc).isoformat(),
-                'complete': True, 'products': matches[:10], 'requiresModel': False,
+                'complete': True, 'products': selected, 'requiresModel': False,
+                'query': query, 'total': len(matches), 'returned': len(selected), 'offset': offset, 'limit': limit,
+                'has_more': offset + len(selected) < len(matches),
+                'next_offset': offset + len(selected) if offset + len(selected) < len(matches) else None,
                 'evidenceType': 'public_listing', 'stockConfirmed': False}
     async def execute():
         if client is not None:

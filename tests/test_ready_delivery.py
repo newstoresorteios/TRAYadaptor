@@ -64,7 +64,7 @@ def test_route_auth_validation_and_openapi(monkeypatch):
 
 def test_route_returns_normalized_error(monkeypatch):
     configure(monkeypatch)
-    async def fail(query):
+    async def fail(query, **kwargs):
         raise httpx.ConnectError('private details')
     monkeypatch.setattr('app.ready_delivery.search_ready_delivery', fail)
     response = TestClient(main.app).get('/internal/ready-delivery?query=Tissot', headers={'Authorization': 'Bearer adapter-token'})
@@ -133,3 +133,44 @@ async def test_story_size_color_and_reference_constraints(query, name, match):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=html(name)))) as client:
         result = await search_ready_delivery(query, client)
     assert bool(result['products']) is match
+
+
+@pytest.mark.asyncio
+async def test_pagination_total_continuation_images_and_last_page():
+    def handler(req):
+        page = int(req.url.params['pg'])
+        rows = [{'nameProduct': f'Relogio {n}', 'availability': 'YES', 'reference': str(n),
+                 'urlProduct': f'https://www.newstorerj.com/relogios/{n}',
+                 'urlImage': f'https://images.tcdn.com.br/img/{n}.jpg'}
+                for n in range((page-1)*12, page*12)]
+        return httpx.Response(200, text='"listProducts":'+json.dumps(rows)+'}?pg=3')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        pages = [await search_ready_delivery('pronta entrega', client, offset=n, limit=10)
+                 for n in (0, 10, 20, 30, 40)]
+    assert all(p['total'] == 36 and p['complete'] for p in pages)
+    assert [p['returned'] for p in pages] == [10, 10, 10, 6, 0]
+    assert [p['next_offset'] for p in pages] == [10, 20, 30, None, None]
+    assert [p['has_more'] for p in pages] == [True, True, True, False, False]
+    urls = [p['url'] for page in pages for p in page['products']]
+    assert len(set(urls)) == len(urls) == 36
+    assert pages[0]['products'][0]['image_url'].endswith('/0.jpg')
+
+
+def test_route_pagination_contract(monkeypatch):
+    configure(monkeypatch)
+    seen = []
+    async def lookup(query, **kwargs):
+        seen.append((query, kwargs))
+        return {'products': [], 'total': 25, 'returned': 0, 'has_more': False, 'next_offset': None}
+    monkeypatch.setattr('app.ready_delivery.search_ready_delivery', lookup)
+    client = TestClient(main.app)
+    headers = {'Authorization': 'Bearer adapter-token'}
+    assert client.get('/internal/ready-delivery?query=pronta&offset=20&limit=10', headers=headers).status_code == 200
+    assert seen == [('pronta', {'offset': 20, 'limit': 10})]
+    for query in ('offset=-1', 'limit=0', 'limit=51'):
+        assert client.get('/internal/ready-delivery?query=pronta&'+query, headers=headers).status_code == 422
+
+
+def test_image_host_cannot_be_injected():
+    body = html().replace('"reference": "T142"', '"urlImage": "https://evil.test/photo.jpg", "reference": "T142"')
+    assert 'image_url' not in parse_page(body)[0][0]
