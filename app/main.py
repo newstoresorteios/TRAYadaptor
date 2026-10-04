@@ -433,6 +433,20 @@ async def internal_ready_delivery(query: str = Query(..., min_length=1, max_leng
         raise HTTPException(503, detail="ready_delivery_unavailable") from None
 
 
+@app.get("/internal/ready-delivery/product", dependencies=[Depends(require_internal_token)])
+async def internal_ready_delivery_product(url: str = Query(..., max_length=2000),
+                                         snapshot_id: str = Query(..., pattern=r'^[a-f0-9]{32}$')):
+    from .ready_delivery_details import product_details
+    import asyncio
+    try:
+        async with asyncio.timeout(15):
+            return await product_details(url, snapshot_id)
+    except KeyError:
+        raise HTTPException(409, detail="ready_delivery_snapshot_expired") from None
+    except (httpx.HTTPError, ValueError, asyncio.TimeoutError):
+        raise HTTPException(503, detail="ready_delivery_details_unavailable") from None
+
+
 @app.get("/internal/products", dependencies=[Depends(require_internal_token)])
 async def internal_products(request: Request):
     _, resource, *_ = _resources()
