@@ -86,6 +86,29 @@ def test_tray_webhook_ignores_other_seller_and_requires_optional_token(monkeypat
     assert accepted.json()["reason"] == "seller_id_mismatch"
 
 
+def test_tray_webhook_accepts_configured_second_store(monkeypatch):
+    configure(
+        monkeypatch,
+        TRAY2_STORE_CODE="1490060",
+        TRAY2_API_BASE="https://loja-nova.test/web_api",
+        TRAY2_CODE="install-code",
+    )
+    monkeypatch.setattr("app.webhooks._database_url", lambda: "")
+    reset_webhooks_for_tests()
+    client = TestClient(main.app)
+    response = client.post(
+        "/webhooks/tray",
+        data={
+            "seller_id": "1490060",
+            "scope_name": "order",
+            "scope_id": "10",
+            "act": "insert",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+
+
 def test_tray_webhook_since_id_returns_newer_events_ascending(monkeypatch):
     configure(monkeypatch)
     monkeypatch.setattr("app.webhooks._database_url", lambda: "")

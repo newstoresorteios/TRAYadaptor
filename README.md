@@ -13,6 +13,10 @@ TRAY_CONSUMER_KEY=
 TRAY_CONSUMER_SECRET=
 TRAY_COUPON_VALID_DAYS=180
 TRAY_STORE_CODE=
+TRAY2_STORE_CODE=
+TRAY2_API_BASE=
+TRAY2_CODE=
+TRAY2_REFRESH_TOKEN=
 TRAY_ADAPTER_TOKEN=
 TRAY_REFRESH_TOKEN=
 TRAY_WEBHOOK_TOKEN=
@@ -21,7 +25,7 @@ TRAY_RATE_LIMIT_PER_DAY=4000
 DATABASE_URL=
 ```
 
-`TRAY_API_BASE` já é o endereço completo da API (incluindo `/web_api`); o cliente não acrescenta esse segmento novamente. Tokens ficam em memória e no cache Postgres (`DATABASE_URL`) e são reutilizados enquanto válidos. Requisições idempotentes podem receber uma tentativa única de refresh após HTTP 401; o POST de carrinho usa reconciliação antes de qualquer nova tentativa.
+`TRAY_API_BASE` já é o endereço completo da API (incluindo `/web_api`); o cliente não acrescenta esse segmento novamente. Uma segunda loja entra com `TRAY2_STORE_CODE`, `TRAY2_API_BASE` e `TRAY2_CODE` ou `TRAY2_REFRESH_TOKEN`. As rotas internas usam essa loja quando a query `store` traz o código; sem `store`, a chamada continua na loja de `TRAY_STORE_CODE`. A cota da Tray é contada por loja. Tokens ficam em memória e no cache Postgres (`DATABASE_URL`) e são reutilizados enquanto válidos. Requisições idempotentes podem receber uma tentativa única de refresh após HTTP 401; o POST de carrinho usa reconciliação antes de qualquer nova tentativa.
 
 A Tray limita a loja a **180 req/min** e **10k/dia** (50k no plano corporativo). Com duas instâncias no Render, o Adapter limita por processo a 90/min e 4000/dia (`TRAY_RATE_LIMIT_PER_MINUTE` / `TRAY_RATE_LIMIT_PER_DAY`). Acima disso responde `429` com `error=tray_rate_limited`. Zero desliga o limiter.
 

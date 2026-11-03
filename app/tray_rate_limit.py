@@ -17,19 +17,30 @@ from .exceptions import TrayAPIError
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_minute_events: deque[float] = deque()
-_day_events: deque[float] = deque()
-_warned_minute = False
-_warned_day = False
+
+
+class _Window:
+    def __init__(self) -> None:
+        self.minute: deque[float] = deque()
+        self.day: deque[float] = deque()
+        self.warned_minute = False
+        self.warned_day = False
+
+
+_windows: dict[str, _Window] = {}
 
 
 def reset_tray_rate_limiter_for_tests() -> None:
-    global _warned_minute, _warned_day
     with _lock:
-        _minute_events.clear()
-        _day_events.clear()
-        _warned_minute = False
-        _warned_day = False
+        _windows.clear()
+
+
+def _window(store_id: str) -> _Window:
+    window = _windows.get(store_id)
+    if window is None:
+        window = _Window()
+        _windows[store_id] = window
+    return window
 
 
 def acquire_tray_quota(settings: Any | None = None) -> None:
@@ -38,16 +49,17 @@ def acquire_tray_quota(settings: Any | None = None) -> None:
     if per_minute <= 0 and per_day <= 0:
         return
 
+    store_id = str(getattr(settings, "tray_store_code", "") or "")
     now = time.time()
-    global _warned_minute, _warned_day
     with _lock:
-        while _minute_events and now - _minute_events[0] > 60:
-            _minute_events.popleft()
-        while _day_events and now - _day_events[0] > 86400:
-            _day_events.popleft()
+        window = _window(store_id)
+        while window.minute and now - window.minute[0] > 60:
+            window.minute.popleft()
+        while window.day and now - window.day[0] > 86400:
+            window.day.popleft()
 
-        minute_count = len(_minute_events)
-        day_count = len(_day_events)
+        minute_count = len(window.minute)
+        day_count = len(window.day)
         if per_minute > 0 and minute_count >= per_minute:
             raise TrayAPIError(
                 "Tray rate limit exceeded",
@@ -69,29 +81,31 @@ def acquire_tray_quota(settings: Any | None = None) -> None:
                 },
             )
 
-        _minute_events.append(now)
-        _day_events.append(now)
+        window.minute.append(now)
+        window.day.append(now)
         minute_count += 1
         day_count += 1
 
         if per_minute > 0 and minute_count >= int(per_minute * 0.8):
-            if not _warned_minute:
+            if not window.warned_minute:
                 logger.warning(
-                    "Tray per-minute quota at %s/%s on this instance",
+                    "Tray per-minute quota at %s/%s on this instance for store %s",
                     minute_count,
                     per_minute,
+                    store_id or "default",
                 )
-                _warned_minute = True
+                window.warned_minute = True
         else:
-            _warned_minute = False
+            window.warned_minute = False
 
         if per_day > 0 and day_count >= int(per_day * 0.8):
-            if not _warned_day:
+            if not window.warned_day:
                 logger.warning(
-                    "Tray per-day quota at %s/%s on this instance",
+                    "Tray per-day quota at %s/%s on this instance for store %s",
                     day_count,
                     per_day,
+                    store_id or "default",
                 )
-                _warned_day = True
+                window.warned_day = True
         else:
-            _warned_day = False
+            window.warned_day = False

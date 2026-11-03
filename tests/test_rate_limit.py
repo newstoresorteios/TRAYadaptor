@@ -39,3 +39,21 @@ def test_zero_quota_disables_limiter():
     settings = _settings(per_minute=0, per_day=0)
     for _ in range(5):
         acquire_tray_quota(settings)
+
+
+def test_each_store_has_its_own_quota():
+    first = _settings(per_minute=1, per_day=100)
+    second = Settings(
+        "https://loja-nova.test/web_api",
+        "code",
+        "key",
+        "secret",
+        180,
+        "1490060",
+        tray_rate_limit_per_minute=1,
+        tray_rate_limit_per_day=100,
+    )
+    acquire_tray_quota(first)
+    acquire_tray_quota(second)
+    with pytest.raises(TrayAPIError):
+        acquire_tray_quota(first)

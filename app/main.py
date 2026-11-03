@@ -6,6 +6,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from uuid import uuid4
 
 import httpx
@@ -14,7 +15,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from .config import get_settings
+from .config import configured_stores, get_settings
 from .exceptions import TrayAPIError, TrayAuthenticationError, TrayConfigurationError, TrayConnectionError, TrayError, TrayValidationError
 from .resources.brands import BrandResource
 from .resources.categories import CategoryResource
@@ -67,7 +68,9 @@ async def _lifespan(_: FastAPI):
         timeout=15.0,
         limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
     )
+    _clients.clear()
     _tray_client = None
+    configured_stores()
     try:
         yield
     finally:
@@ -75,6 +78,7 @@ async def _lifespan(_: FastAPI):
             await _http_client.aclose()
         _http_client = None
         _tray_client = None
+        _clients.clear()
 
 
 app = FastAPI(title="TrayAdapter", lifespan=_lifespan)
@@ -92,7 +96,11 @@ async def validation_observability(request: Request, call_next):
     trace_id = _request_trace_id(request)
     request.state.trace_id = trace_id
     started_at = time.perf_counter()
-    response = await call_next(request)
+    store_token = _store_scope.set((request.query_params.get("store") or "").strip() or None)
+    try:
+        response = await call_next(request)
+    finally:
+        _store_scope.reset(store_token)
     response.headers["X-Trace-ID"] = trace_id
     tray_logger.info(
         "[tray.http] trace_id=%s method=%s path=%s status=%s latency_ms=%.2f",
@@ -134,12 +142,29 @@ async def validation_observability(request: Request, call_next):
     return response
 
 
+_store_scope: ContextVar[str | None] = ContextVar("tray_store_scope", default=None)
+_clients: dict[str, TrayClient] = {}
+
+
 def _client() -> TrayClient:
     global _tray_client, _http_client
-    settings = get_settings()
-    if _tray_client is None or _tray_client.auth.settings != settings:
-        _tray_client = TrayClient(TrayAuth(settings, http_client=_http_client))
-    return _tray_client
+    stores = configured_stores()
+    requested = (_store_scope.get() or "").strip()
+    if requested:
+        settings = stores.get(requested)
+        if settings is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Loja Tray não configurada: {requested}",
+            )
+    else:
+        settings = get_settings()
+    client = _clients.get(settings.tray_store_code)
+    if client is None or client.auth.settings != settings:
+        client = TrayClient(TrayAuth(settings, http_client=_http_client))
+        _clients[settings.tray_store_code] = client
+    _tray_client = client
+    return client
 
 
 def _resources():
@@ -301,6 +326,7 @@ async def health_tray():
     return {
         "status": "ok",
         "store_id": state.store_id,
+        "configured_stores": sorted(configured_stores()),
         "access_valid": state.access_is_valid(),
         "access_expires_at": (
             state.access_expires_at.isoformat() if state.access_expires_at else None
@@ -760,13 +786,16 @@ async def tray_webhook(request: Request):
     if not webhook_token_matches(str(supplied), settings.tray_webhook_token):
         raise HTTPException(status_code=401, detail="Unauthorized")
     form = await request.form()
+    seller_id = str(form.get("seller_id") or "")
+    known_stores = set(configured_stores())
+    expected_seller = seller_id if seller_id in known_stores else settings.tray_store_code
     result = ingest_tray_notification(
-        seller_id=str(form.get("seller_id") or ""),
+        seller_id=seller_id,
         scope_name=str(form.get("scope_name") or ""),
         scope_id=str(form.get("scope_id") or ""),
         act=str(form.get("act") or ""),
         app_code=str(form.get("app_code") or ""),
-        expected_seller_id=settings.tray_store_code,
+        expected_seller_id=expected_seller,
     )
     return {"success": True, **result}
 
